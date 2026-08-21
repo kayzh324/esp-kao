@@ -5,16 +5,15 @@
  */
 #pragma once
 
-#include <stdbool.h>
-
 #include "esp_err.h"
+#include "lua.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t emote_start(void);
-esp_err_t emote_set_network_status(bool sta_connected, const char *ap_ssid);
+int luaopen_ledc(lua_State *L);
+esp_err_t lua_module_ledc_register(void);
 
 #ifdef __cplusplus
 }

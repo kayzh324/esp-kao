@@ -35,6 +35,19 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
                                       const char *tools_json,
                                       claw_core_llm_response_t *out_response,
                                       char **out_error_message);
+/*
+ * opencode-go provider support (added): session_id-aware variant. The id is
+ * borrowed (not owned) from the caller's request view and forwarded to
+ * backends that carry a session_header_name (opencode_go); all other
+ * backends ignore it. Prefer this variant from the agent loop.
+ */
+esp_err_t claw_core_llm_chat_messages_for_session(claw_core_handle_t core,
+                                                  const char *session_id,
+                                                  const char *system_prompt,
+                                                  cJSON *messages,
+                                                  const char *tools_json,
+                                                  claw_core_llm_response_t *out_response,
+                                                  char **out_error_message);
 esp_err_t claw_core_llm_infer_media(claw_core_handle_t core,
                                     const claw_llm_media_request_t *request,
                                     char **out_text,

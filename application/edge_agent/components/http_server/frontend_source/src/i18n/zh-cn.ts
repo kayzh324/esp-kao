@@ -110,6 +110,8 @@ export const zhCn: Dict = {
   llmProviderMinimaxCn: 'MiniMax (CN)',
   llmProviderOpenaiCompatible: 'OpenAI 兼容 API',
   llmProviderAnthropicCompatible: 'Anthropic 兼容 API',
+  /* opencode-go provider support (added) - do not drop on project update. */
+  llmProviderOpencodeGo: 'opencode go',
   llmProviderCustom: '自定义',
   llmFillDefaults: '填入默认配置',
   llmProviderDocs: '供应商文档',

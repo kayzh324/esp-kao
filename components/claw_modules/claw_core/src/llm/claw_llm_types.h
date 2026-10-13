@@ -45,6 +45,13 @@ typedef struct {
     bool supports_tools;
     bool supports_vision;
     bool image_remote_url_only;
+    /*
+     * opencode-go provider support (added): when non-NULL, every chat/media HTTP
+     * request also sends the per-session header below (e.g. "x-opencode-session")
+     * so providers like opencode go can optimize routing and prompt caching.
+     * NULL for all other backends - their requests stay byte-identical.
+     */
+    const char *session_header_name;
 } claw_llm_model_profile_t;
 
 typedef struct {
@@ -81,6 +88,13 @@ typedef struct {
     cJSON *messages;
     const char *tools_json;
     volatile bool *abort_flag;
+    /*
+     * opencode-go provider support (added): borrowed (not owned) session id
+     * of the ongoing conversation. Backends with a non-NULL
+     * model_profile.session_header_name forward it as a per-session HTTP header
+     * (e.g. "x-opencode-session"); all other backends ignore it.
+     */
+    const char *session_id;
 } claw_llm_chat_request_t;
 
 typedef struct {
@@ -88,6 +102,11 @@ typedef struct {
     const char *user_prompt;
     const claw_media_asset_t *media;
     size_t media_count;
+    /*
+     * opencode-go provider support (added): borrowed (not owned) session id,
+     * same forwarding rule as claw_llm_chat_request_t.session_id above.
+     */
+    const char *session_id;
 } claw_llm_media_request_t;
 
 typedef struct {

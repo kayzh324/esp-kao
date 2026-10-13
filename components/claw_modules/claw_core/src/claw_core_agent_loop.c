@@ -301,12 +301,18 @@ void claw_core_agent_loop_task(void *arg)
             }
 
             claw_core_control_set_phase(core, CLAW_CORE_AGENT_LOOP_PHASE_IN_LLM_HTTP);
-            err = claw_core_llm_chat_messages(core,
-                                              system_prompt,
-                                              messages,
-                                              tools_json,
-                                              &llm_response,
-                                              &response.view.error_message);
+            /*
+             * opencode-go provider support (added): pass the borrowed session
+             * id so the opencode_go backend can attach the
+             * "x-opencode-session" header; other backends ignore it.
+             */
+            err = claw_core_llm_chat_messages_for_session(core,
+                                                           request.view.session_id,
+                                                           system_prompt,
+                                                           messages,
+                                                           tools_json,
+                                                           &llm_response,
+                                                           &response.view.error_message);
             if (err != ESP_OK) {
                 bool drained = false;
 

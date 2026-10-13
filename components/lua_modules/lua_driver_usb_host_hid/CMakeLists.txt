@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "src/lua_driver_usb_host_hid.c"
+        "src/lua_hid_report_parser.c"
+    INCLUDE_DIRS
+        "src"
+    REQUIRES
+        cap_lua
+        usb_host_hid
+)

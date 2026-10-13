@@ -1,0 +1,214 @@
+version: 1.0.0
+
+# Devices Configuration
+devices:
+  # boardmanager无法把expander扩展出来的引脚传给屏幕驱动控制，屏幕需要cs跳变另外两个引脚不需要跳变，因此直接将引脚控制直接放入定制屏幕驱动的初始化过程中，不再把扩展芯片注册进boardmanager
+  # - name: gpio_expander_pca9557
+  #   version: 1.0.0
+  #   chip: pca9557
+  #   type: gpio_expander
+  #   dependencies:
+  #     esp_io_expander_pca9557:
+  #       override_path: "${BOARD_PATH}/components/esp_io_expander_pca9557"
+  #       require: public
+  #   config:
+  #     max_pins: 3
+  #     # IO0=LCD_CS, IO1=PA_EN, IO2=DVP_PWDN
+  #     output_io_mask: [0, 1, 2]          # 三个脚都设为输出
+  #     output_io_level_mask: [0, 1, 0]    # CS常低=选中 / PA高=使能 / PWDN低=供电
+  #     # No output_io_mode_mask: PCA9557 outputs are push-pull only, and the
+  #     # board manager treats a present mask as "call set_output_mode", which
+  #     # this chip cannot satisfy.
+  #     io_pullup_list: []
+  #     io_pulldown_list: []
+  #     input_io_mask: []
+  #   peripherals:
+  #     - name: i2c_master
+  #       i2c_addr: 0x32              # 8-bit form of 7-bit 0x19 (A0=1, A1=A2=0); board manager probes addr>>1
+
+
+  - name: display_lcd
+    chip: st7789
+    type: display_lcd
+    sub_type: spi
+    version: default
+    dependencies:
+      esp_st7789_lichuang_custom:
+        override_path: "${BOARD_PATH}/components/esp_st7789_lichuang_custom"
+        require: public
+    config:
+      mirror_x: true
+      mirror_y: false
+      swap_xy: true
+      invert_color: true             # ST7789 通常需要反色
+      need_reset: false
+      x_max: 320
+      y_max: 240
+      io_spi_config:
+        cs_gpio_num: -1              # CS 由定制驱动里的 PCA9557 完成 reset 期间的 CS 转换
+        dc_gpio_num: 39              # 实战派 IO39 DC ✅
+        spi_mode: 2
+        pclk_hz: 80000000            # 原厂使用 80 MHz
+        trans_queue_depth: 10         # 原厂使用深度 10
+        lcd_cmd_bits: 8
+        lcd_param_bits: 8
+      lcd_panel_config:
+        reset_gpio_num: -1           # 实战派 LCD 无独立复位脚（或经 expander）
+        rgb_ele_order: LCD_RGB_ELEMENT_ORDER_RGB
+        bits_per_pixel: 16
+        vendor_config: NULL
+        flags:
+          reset_active_high: false
+    peripherals:
+      - name: spi_display
+
+  - name: lcd_brightness
+    type: ledc_ctrl
+    version: default
+    peripherals:
+      - name: ledc_backlight
+
+  # - name: fs_fat_sdcard
+  #   version: 1.0.0
+  #   type: fs_fat
+  #   sub_type: sdmmc
+  #   config:
+  #     mount_point: /sdcard
+  #     vfs_config:
+  #       format_if_mount_failed: false
+  #       max_files: 5
+  #       allocation_unit_size: 16384
+  #     sub_config:
+  #       slot: SDMMC_HOST_SLOT_1
+  #       frequency: SDMMC_FREQ_HIGHSPEED
+  #       bus_width: 1
+  #       slot_flags: SDMMC_SLOT_FLAG_INTERNAL_PULLUP
+  #       pins:
+  #         clk: 47
+  #         cmd: 48
+  #         d0: 21
+  #         d1: -1
+  #         d2: -1
+  #         d3: -1
+  #         d4: -1
+  #         d5: -1
+  #         d6: -1
+  #         d7: -1
+  #         cd: -1
+  #         wp: -1
+  #   peripherals: []
+
+  - name: audio_dac
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      adc_enabled: false
+      dac_enabled: true
+      dac_max_channel: 1
+      # DAC channel mask, 1-enable, 0-disable, layout: left,right
+      dac_channel_mask: "1"     # Left enable
+      dac_init_gain: 0           # dB
+
+      # Audio processing settings
+      mclk_enabled: true
+    peripherals:
+      - name: i2s_audio_out
+      - name: i2c_master
+        address: 0x30              # 实战派 ES8311 地址 ✅
+        frequency: 400000
+
+  # - name: audio_adc
+  #   chip: es7210
+  #   type: audio_codec
+  #   version: default
+  #   config:
+  #     adc_enabled: true
+  #     adc_max_channel: 4
+  #     # The channel mask, 1-enable, 0-disable
+  #     # e.g."0111", bit0: Mic0 enable, bit1: Mic1 enable, bit2: Mic2 enable, bit3: Mic3 enable, bit4: Mic4 disable
+  #     adc_channel_mask: "0011"
+  #     adc_channel_labels: ['NA', 'RE', 'FR', 'FL'] # MSB ~ LSB
+  #     adc_init_gain: 0           # dB
+  #   peripherals:
+  #     - name: i2s_audio_in           # ⚠️ 引用输入通道（不是 out）
+  #     - name: i2c_master
+  #       address: 0x80              # 实战派 ES7210 地址 ✅
+  #       frequency: 400000
+
+
+
+
+
+  # - name: lcd_touch_ft6x36
+  #   version: 1.0.0
+  #   chip: ft6x36
+  #   type: lcd_touch
+  #   sub_type: i2c
+  #   depends_on: display_lcd
+  #   config:
+  #     io_i2c_config:
+  #       control_phase_bytes: 1
+  #       dc_bit_offset: 0
+  #       lcd_cmd_bits: 8
+  #       lcd_param_bits: 8
+  #       scl_speed_hz: 400000
+  #       flags:
+  #         dc_low_on_data: false
+  #         disable_control_phase: true
+  #     touch_config:
+  #       x_max: 320
+  #       y_max: 240
+  #       rst_gpio_num: -1
+  #       int_gpio_num: -1
+  #       levels:
+  #         reset: 0
+  #         interrupt: 0
+  #       flags:
+  #         swap_xy: true
+  #         mirror_x: true
+  #         mirror_y: false
+  #   peripherals:
+  #     - name: i2c_master
+  #       i2c_addr: 0x70
+
+  # - name: camera_dvp
+  #   version: 1.0.0
+  #   type: camera
+  #   sub_type: dvp
+  #   config:
+  #     dvp_config:
+  #       reset_io: -1
+  #       pwdn_io: -1
+  #       vsync_io: 3
+  #       data_width: CAM_CTLR_DATA_WIDTH_8
+  #       de_io: -1
+  #       pclk_io: 7
+  #       xclk_io: -1
+  #       xclk_freq: 20000000
+  #       data_io:
+  #         data_io_0: 16
+  #         data_io_1: 18
+  #         data_io_2: 8
+  #         data_io_3: 17
+  #         data_io_4: 15
+  #         data_io_5: 6
+  #         data_io_6: 4
+  #         data_io_7: 9
+  #         data_io_8: -1
+  #         data_io_9: -1
+  #         data_io_10: -1
+  #         data_io_11: -1
+  #         data_io_12: -1
+  #         data_io_13: -1
+  #         data_io_14: -1
+  #         data_io_15: -1
+  #   depends_on: gpio_expander_pca9557
+  #   peripherals:
+  #     - name: i2c_master
+  #       frequency: 100000
+
+
+
+
+

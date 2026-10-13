@@ -1,0 +1,21 @@
+# Local patched copy of espressif/usb_host_uac 1.5.0
+#
+# Patch: uac_host_interface_check() now walks all alternate settings to find
+# the first one that has an endpoint, instead of only checking alt 0.  This
+# fixes devices whose alt 0 is a UAC 1.0 zero-bandwidth placeholder (e.g.
+# the AB13X USB-C to 3.5 mm headset adapter).
+#
+# Upstream: espressif/esp-usb, host/class/uac/usb_host_uac, commit 6d24137
+# To upgrade: replace uac_host.c and uac_descriptors.c with the new upstream
+# versions, then re-apply the patch in uac_host_interface_check().
+
+version: "1.5.0-local-patch1"
+description: "USB Host UAC driver (local patch: zero-bandwidth alt-0 fix)"
+dependencies:
+  idf: ">=5.0"
+  usb:
+    public: true
+    rules:
+      - if: idf_version < 6.0
+      - if: target not in ["linux"]
+    version: "^1.0.0"

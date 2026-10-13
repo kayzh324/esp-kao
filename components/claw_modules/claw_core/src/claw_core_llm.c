@@ -184,6 +184,24 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
                                       claw_core_llm_response_t *out_response,
                                       char **out_error_message)
 {
+    /* opencode-go provider support (added): legacy wrapper, no session id. */
+    return claw_core_llm_chat_messages_for_session(core,
+                                                    NULL,
+                                                    system_prompt,
+                                                    messages,
+                                                    tools_json,
+                                                    out_response,
+                                                    out_error_message);
+}
+
+esp_err_t claw_core_llm_chat_messages_for_session(claw_core_handle_t core,
+                                                  const char *session_id,
+                                                  const char *system_prompt,
+                                                  cJSON *messages,
+                                                  const char *tools_json,
+                                                  claw_core_llm_response_t *out_response,
+                                                  char **out_error_message)
+{
     claw_llm_chat_request_t request = {0};
 #if CLAW_CORE_LOG_FULL_LLM_REQUEST
     char *messages_json = NULL;
@@ -204,6 +222,10 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
     request.messages = messages;
     request.tools_json = tools_json;
     request.abort_flag = &core->inflight_abort;
+    /* opencode-go provider support (added): borrowed session id for the
+     * x-opencode-session header; ignored by backends without a
+     * session_header_name in their registration. */
+    request.session_id = session_id;
 
 #if CLAW_CORE_LOG_FULL_LLM_REQUEST
     messages_json = cJSON_PrintUnformatted(messages);

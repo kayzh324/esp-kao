@@ -36,6 +36,7 @@ static claw_memory_message_intent_t claw_memory_parse_message_intent(const char 
 }
 
 static esp_err_t claw_memory_llm_chat_with_runtime(claw_llm_runtime_t *runtime,
+                                                   const char *session_id,
                                                    const char *system_prompt,
                                                    const char *user_text,
                                                    char **out_text,
@@ -78,6 +79,13 @@ static esp_err_t claw_memory_llm_chat_with_runtime(claw_llm_runtime_t *runtime,
                                     .system_prompt = system_prompt,
                                     .messages = messages,
                                     .tools_json = NULL,
+                                    /*
+                                     * opencode-go provider support (added):
+                                     * borrowed session id for the
+                                     * x-opencode-session header; ignored by
+                                     * backends without session_header_name.
+                                     */
+                                    .session_id = session_id,
                                 },
                                 &response,
                                 out_error_message);
@@ -605,6 +613,7 @@ static esp_err_t claw_memory_store_extracted_candidate(cJSON *candidate,
 }
 
 esp_err_t claw_memory_auto_extract_prepare_with_runtime(claw_llm_runtime_t *runtime,
+                                                        const char *session_id,
                                                         const char *user_text,
                                                         claw_memory_message_intent_t *out_message_intent,
                                                         char **out_llm_text)
@@ -664,6 +673,7 @@ esp_err_t claw_memory_auto_extract_prepare_with_runtime(claw_llm_runtime_t *runt
     }
 
     if (claw_memory_llm_chat_with_runtime(runtime,
+                                          session_id,
                                           system_prompt,
                                           prompt,
                                           &llm_text,

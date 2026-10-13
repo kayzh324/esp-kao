@@ -143,6 +143,8 @@ esp_err_t claw_llm_runtime_init(claw_llm_runtime_t **out_runtime,
     runtime->profile.supports_tools = runtime->config.supports_tools;
     runtime->profile.supports_vision = runtime->config.supports_vision;
     runtime->profile.image_remote_url_only = runtime->config.image_remote_url_only;
+    /* opencode-go provider support (added): optional per-session header name. */
+    runtime->profile.session_header_name = backend_registration->defaults.session_header_name;
     runtime->backend = backend_registration->vtable;
 
     err = runtime->backend->init(&runtime->config, &runtime->profile, &runtime->backend_ctx, out_error_message);

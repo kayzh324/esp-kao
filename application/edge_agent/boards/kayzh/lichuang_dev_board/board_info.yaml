@@ -1,0 +1,4 @@
+board: lichuang_dev_board
+chip: esp32s3
+description: "LichuangDevBoard with ESP32 S3 N16R8"
+manufacturer: "lichuang"

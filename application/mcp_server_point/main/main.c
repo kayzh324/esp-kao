@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include "wifi_manager.h"
 #include "wear_levelling.h"
 #include "nvs_flash.h"
@@ -110,9 +111,9 @@ static esp_err_t init_fatfs(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to query FATFS info: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "FATFS mounted total=%u used=%u",
-                 (unsigned int)total,
-                 (unsigned int)(total - free_bytes));
+        ESP_LOGI(TAG, "FATFS mounted total=%" PRIu64 " bytes used=%" PRIu64 " bytes",
+                 total,
+                 total - free_bytes);
     }
 
     return ESP_OK;

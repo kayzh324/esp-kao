@@ -1,0 +1,176 @@
+version: 1.0.0
+# Devices Configuration
+#
+# Display (ILI9341)  : SPI2, CS=10, DC=8, RST=7   @ 40 MHz
+# Touch (XPT2046)    : SPI2, CS=9,  IRQ=5         @ 1 MHz  (2.5 MHz is the chip limit)
+# SD card (SPI mode) : SPI3, CS=40， SCK=36, MOSI=35, MISO=37               
+# magnetometer_sensor(bmm150) I2C
+# imu_sensor(bmi270) I2C
+devices:
+
+
+  - name: fake_audio_dac # Just for invoking audio dependencies, no actual DAC hardware connected
+    chip: none
+    type: audio_codec
+    version: default
+    init_skip: true
+    peripherals:
+      - name: i2s_audio_out
+
+  - name: fake_camera # Just for invoking camera dependencies, no actual camera hardware connected
+    type: camera
+    version: default
+    sub_type: "dvp"
+    init_skip: true
+    peripherals:
+      - name: i2c_master                   # Must match a periph_i2c name; provides SCCB i2c_handle to esp_video
+        frequency: 100000                   # SCCB I2C frequency (Hz)
+
+  - name: camera
+    type: custom
+    version: default
+    dependencies:
+      espressif/usb_host_uvc: "2.4.2"
+
+  - name: audio_dac
+    type: custom
+    version: default
+    dependencies:
+      # Local patched copy of usb_host_uac 1.5.0 (alt-0 zero-bandwidth fix for AB13X).
+      # To go back to upstream, replace this block with: espressif/usb_host_uac: "^1.4.0"
+      espressif/usb_host_uac:
+        override_path: "${BOARD_PATH}/components/espressif__usb_host_uac"
+    config:
+      sample_rate_hz: 16000           # Sample rate in Hz
+
+  - name: audio_adc
+    type: custom
+    version: default
+    config:
+      sample_rate_hz: 16000           # Sample rate in Hz
+
+
+
+
+
+
+  - name: display_lcd
+    chip: ili9341
+    type: display_lcd
+    sub_type: spi
+    version: default
+    dependencies:
+      espressif/esp_lcd_ili9341: "*"
+    config:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: false
+      x_max: 320
+      y_max: 240
+      invert_color: false
+      io_spi_config:
+        cs_gpio_num: 10
+        dc_gpio_num: 8
+        spi_mode: 0
+        pclk_hz: 40000000         # drop to 20000000 if the panel shows tearing/noise
+        trans_queue_depth: 10
+        flags:
+          sio_mode: true          # write-only panel, never reads back on MISO
+
+      lcd_panel_config:
+        reset_gpio_num: 17
+        rgb_ele_order: LCD_RGB_ELEMENT_ORDER_BGR
+        bits_per_pixel: 16
+        data_endian: LCD_RGB_DATA_ENDIAN_BIG
+        flags:
+          reset_active_high: false  # ILI9341 RESX is active low
+
+    peripherals:
+      - name: spi_master
+
+  # XPT2046 is a SPI touch controller and dev_lcd_touch only implements sub_type
+  # i2c, so the panel IO + esp_lcd_touch handle are created by the custom device
+  # implemented in setup_device.c. The device handle IS an esp_lcd_touch_handle_t,
+  # so Lua can use it directly:
+  #   local h = board_manager.get_device_handle("lcd_touch")
+  #   local t = lcd_touch.poll(h)
+  - name: lcd_touch
+    chip: xpt2046
+    type: custom
+    version: default
+    init_skip: false
+    dependencies:
+      atanisoft/esp_lcd_touch_xpt2046: "*"
+    config:
+      cs_gpio_num: 18
+      int_gpio_num: -1        # IRQ is wired to GPIO5; set to 5 to switch to interrupt mode
+      clock_speed_hz: 1000000 # XPT2046 tops out at 2.5 MHz, keep well below it
+      x_max: 320
+      y_max: 240
+      swap_xy: false           # must match the display orientation above
+      mirror_x: false
+      mirror_y: true
+    peripherals:
+      - name: spi_master
+
+
+  - name: fs_sdcard
+    type: fs_fat
+    sub_type: spi
+    version: default
+    config:
+      vfs_config:
+        format_if_mount_failed: false
+        max_files: 5
+      sub_config:
+        cs_gpio_num: 4
+        frequency: SDMMC_FREQ_DEFAULT
+    peripherals:
+      - name: spi_sdcard
+
+
+
+
+
+  # int_gpio_num is -1 on purpose: the previous values (11 / 12) are the shared
+  # SPI MOSI and SCLK pins, and lua_module_imu/magnetometer run gpio_config() on
+  # that pin, which would tear the SPI signal off the bus and kill the display.
+  - name: imu_sensor
+    chip: bmi270
+    type: custom
+    version: 1.0.0
+    init_skip: true
+    config:
+      i2c_addr: 0x68
+      frequency: 100000
+      int_gpio_num: -1
+      sdo_gpio_num: -1
+    peripherals:
+      - name: i2c_master
+
+
+  - name: magnetometer_sensor
+    chip: bmm150
+    type: custom
+    version: 1.0.0
+    init_skip: true
+    config:
+      i2c_addr: 0x13
+      frequency: 100000
+      int_gpio_num: -1
+      sdo_gpio_num: -1
+    peripherals:
+      - name: i2c_master
+
+  - name: scd41_sensor
+    chip: scd41
+    type: custom
+    version: 1.0.0
+    init_skip: true
+    config:
+      i2c_addr: 0x62
+      frequency: 100000
+      int_gpio_num: -1
+      sdo_gpio_num: -1
+    peripherals:
+      - name: i2c_master

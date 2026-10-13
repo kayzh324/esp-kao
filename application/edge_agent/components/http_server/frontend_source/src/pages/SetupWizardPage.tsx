@@ -55,7 +55,9 @@ type ProviderKey =
   | 'minimax_global'
   | 'minimax_cn'
   | 'openai_compatible'
-  | 'anthropic_compatible';
+  | 'anthropic_compatible'
+  /* opencode-go provider support (added) - do not drop on project update. */
+  | 'opencode_go';
 type PlatformId = 'wechat' | 'feishu' | 'qq' | 'telegram';
 
 type LlmForm = {
@@ -214,6 +216,18 @@ const PROVIDER_PRESETS: Record<ProviderKey, ProviderPreset> = {
     llm_image_remote_url_only: 'false',
     llm_model: 'claude-sonnet-4-6',
   },
+  /* opencode-go provider support (added) - do not drop on project update. */
+  opencode_go: {
+    llm_backend_type: 'opencode_go',
+    llm_base_url: 'https://opencode.ai/zen/go',
+    llm_auth_type: 'bearer',
+    llm_default_image_max_bytes: '524288',
+    llm_max_tokens_field: 'max_tokens',
+    llm_supports_tools: 'true',
+    llm_supports_vision: 'true',
+    llm_image_remote_url_only: 'false',
+    llm_model: 'deepseek-v4.1-flash',
+  },
 };
 
 const PRESET_BUTTONS: ProviderKey[] = [
@@ -227,6 +241,8 @@ const PRESET_BUTTONS: ProviderKey[] = [
   'minimax_cn',
   'openai_compatible',
   'anthropic_compatible',
+  /* opencode-go provider support (added) - do not drop on project update. */
+  'opencode_go',
 ];
 
 const PLATFORM_ORDER: PlatformId[] = ['wechat', 'feishu', 'qq', 'telegram'];
@@ -297,6 +313,9 @@ function providerLabel(key: ProviderKey): string {
       return t('llmProviderOpenaiCompatible') as string;
     case 'anthropic_compatible':
       return t('llmProviderAnthropicCompatible') as string;
+    /* opencode-go provider support (added) - do not drop on project update. */
+    case 'opencode_go':
+      return t('llmProviderOpencodeGo') as string;
   }
 }
 

@@ -112,6 +112,8 @@ export const en = {
   llmProviderMinimaxCn: 'MiniMax (CN)',
   llmProviderOpenaiCompatible: 'OpenAI Compatible API',
   llmProviderAnthropicCompatible: 'Anthropic Compatible API',
+  /* opencode-go provider support (added) - do not drop on project update. */
+  llmProviderOpencodeGo: 'opencode go',
   llmProviderCustom: 'Custom',
   llmFillDefaults: 'Fill Default Config',
   llmProviderDocs: 'Provider Docs',

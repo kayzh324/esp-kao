@@ -168,6 +168,15 @@ claw_memory_backend_format_t claw_memory_backend_format_from_type(const char *ba
     if (strcmp(backend_type, "anthropic_compatible") == 0) {
         return CLAW_MEMORY_BACKEND_FORMAT_ANTHROPIC;
     }
+    /*
+     * opencode-go provider support (added): opencode_go speaks the plain
+     * OpenAI wire protocol (plus an extra x-opencode-session HTTP header),
+     * so its persisted session records use the OpenAI message format and
+     * stay replay-compatible with openai_compatible history.
+     */
+    if (strcmp(backend_type, "opencode_go") == 0) {
+        return CLAW_MEMORY_BACKEND_FORMAT_OPENAI;
+    }
     return CLAW_MEMORY_BACKEND_FORMAT_UNKNOWN;
 }
 

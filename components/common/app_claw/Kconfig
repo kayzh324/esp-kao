@@ -16,6 +16,7 @@ menu "App Claw Config"
             is enabled, Lua LVGL scripts switch screens inside this runtime
             instead of initializing LVGL directly.
 
+
     choice APP_CLAW_MEMORY_MODE
         prompt "App Claw memory management mode"
         depends on APP_CLAW_CAP_MEMORY
@@ -261,6 +262,13 @@ menu "App Claw Config"
                 Enable the UART Lua driver and keep app_claw's direct dependency
                 on lua_driver_uart when Lua capability is enabled.
 
+        config APP_CLAW_LUA_DRIVER_USB_HOST_HID
+            bool "Enable USB Host HID Lua driver"
+            default n
+            help
+                Enable the USB Host HID driver and keep app_claw's direct dependency
+                on lua_driver_usb_host_hid when Lua capability is enabled.
+
         comment "--- Higher-level modules (lua_module) ---"
 
         config APP_CLAW_LUA_MODULE_AUDIO
@@ -339,6 +347,13 @@ menu "App Claw Config"
             help
                 Enable the environmental sensor Lua module and keep app_claw's direct
                 dependency on lua_module_environmental_sensor when Lua capability is enabled.
+
+        config LUA_MODULE_SCD41_SENSOR_ENABLE
+            bool "Enable SCD41 sensor Lua module"
+            default n
+            help
+                Enable the SCD41 CO2 sensor Lua module integration when Lua capability
+                is enabled.
 
         config APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
             bool "Enable event publisher Lua module"

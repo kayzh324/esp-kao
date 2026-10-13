@@ -1,0 +1,4 @@
+board: jc_esp32_p4_m3_dev
+chip: esp32p4
+description: "jc_esp32_p4_m3_dev"
+manufacturer: "JC"

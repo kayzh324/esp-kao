@@ -287,7 +287,13 @@ static void claw_memory_async_extract_task(void *arg)
             continue;
         }
 
+        /*
+         * opencode-go provider support (added): pass the job's session id so
+         * the async extract LLM call also carries the x-opencode-session
+         * header when the opencode_go backend is active.
+         */
         err = claw_memory_auto_extract_prepare_with_runtime(s_async_extract.runtime,
+                                                            job->session_id,
                                                             job->user_text,
                                                             &message_intent,
                                                             &llm_text);

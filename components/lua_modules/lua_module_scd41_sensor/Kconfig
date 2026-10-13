@@ -1,0 +1,9 @@
+menu "Lua SCD41 Sensor Module"
+
+    config LUA_MODULE_SCD41_SENSOR_ENABLE
+        bool "Enable SCD41 sensor Lua module"
+        default y
+        help
+            Build the SCD41 CO2, temperature, and humidity sensor Lua module.
+
+endmenu

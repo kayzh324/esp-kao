@@ -351,6 +351,20 @@ static esp_err_t openai_compatible_chat(void *backend_ctx,
             !out_response || !out_error_message) {
         return ESP_ERR_INVALID_ARG;
     }
+    /*
+     * opencode-go provider support (added): the session header is attached
+     * only when this runtime's profile carries a session_header_name (i.e.
+     * the opencode_go registration) and the request has a session id; plain
+     * openai_compatible keeps header_count 0 and sends no extra headers, so
+     * its requests stay byte-identical.
+     */
+    const claw_llm_http_header_t session_headers[1] = {
+        { .name = profile->session_header_name,
+          .value = request->session_id },
+    };
+    const size_t session_header_count =
+        (profile->session_header_name && request->session_id && request->session_id[0])
+        ? 1 : 0;
 
     err = build_chat_body(ctx, profile, request, &post_data, out_error_message);
     if (err != ESP_OK) {
@@ -370,6 +384,8 @@ static esp_err_t openai_compatible_chat(void *backend_ctx,
     http_request.auth_type = ctx->auth_type;
     http_request.timeout_ms = ctx->timeout_ms;
     http_request.abort_flag = request->abort_flag;
+    http_request.headers = session_header_count ? session_headers : NULL;
+    http_request.header_count = session_header_count;
 
     err = claw_llm_http_post_json(&http_request, &http_response, out_error_message);
     free(url);
@@ -415,6 +431,17 @@ static esp_err_t openai_compatible_infer_media(void *backend_ctx,
     if (!ctx || !profile || !request || !out_text || !out_error_message) {
         return ESP_ERR_INVALID_ARG;
     }
+    /*
+     * opencode-go provider support (added): same opt-in session header rule
+     * as openai_compatible_chat() above; plain openai_compatible sends none.
+     */
+    const claw_llm_http_header_t session_headers[1] = {
+        { .name = profile->session_header_name,
+          .value = request->session_id },
+    };
+    const size_t session_header_count =
+        (profile->session_header_name && request->session_id && request->session_id[0])
+        ? 1 : 0;
     if (!profile->supports_vision) {
         *out_error_message = dup_printf("Selected profile does not support media inference");
         return ESP_ERR_NOT_SUPPORTED;
@@ -495,6 +522,9 @@ static esp_err_t openai_compatible_infer_media(void *backend_ctx,
     http_request.api_key = ctx->api_key;
     http_request.auth_type = ctx->auth_type;
     http_request.timeout_ms = ctx->timeout_ms;
+    /* opencode-go provider support (added): attach the per-session header. */
+    http_request.headers = session_header_count ? session_headers : NULL;
+    http_request.header_count = session_header_count;
 
     err = claw_llm_http_post_json(&http_request, &http_response, out_error_message);
     if (err != ESP_OK) {
@@ -573,4 +603,39 @@ const claw_llm_backend_vtable_t *claw_llm_backend_openai_compatible_vtable(void)
 const claw_llm_backend_registration_t *claw_llm_backend_openai_compatible_registration(void)
 {
     return &s_openai_compatible_registration;
+}
+
+/* ==========================================================================
+ * opencode-go provider support (added) - do not drop on project update.
+ *
+ * opencode go (https://opencode.ai/zen/go) is a standard OpenAI-compatible
+ * endpoint that additionally asks coding-agent clients to send the current
+ * conversation's session id in an "x-opencode-session" header on every LLM
+ * request, so the provider can optimize routing and prompt-cache hits within
+ * one conversation. The provider documentation also asks for a dedicated
+ * client user agent, which is intentionally NOT set here (esp-claw is not a
+ * mainstream coding client and gains nothing from it).
+ *
+ * Implementation: this registration reuses every openai_compatible function
+ * (same wire protocol); the only difference is defaults.session_header_name
+ * below. claw_llm_runtime_init() copies it into the model profile, and the
+ * chat/infer_media functions above attach
+ * "x-opencode-session: <session_id>" only when both the name and the
+ * request's session id are present. Every other backend leaves
+ * session_header_name NULL and sends byte-identical requests as before.
+ * ========================================================================== */
+static const claw_llm_backend_registration_t s_opencode_go_registration = {
+    .id = CLAW_LLM_BACKEND_OPENCODE_GO_ID,
+    .vtable = &s_openai_compatible_vtable,
+    .defaults = {
+        .auth_type = CLAW_LLM_BACKEND_OPENCODE_GO_AUTH_TYPE,
+        .chat_path = CLAW_LLM_BACKEND_OPENCODE_GO_CHAT_PATH,
+        .max_tokens_field = CLAW_LLM_BACKEND_OPENCODE_GO_DEFAULT_MAX_TOKENS_FIELD,
+        .session_header_name = CLAW_LLM_BACKEND_OPENCODE_GO_SESSION_HEADER,
+    },
+};
+
+const claw_llm_backend_registration_t *claw_llm_backend_opencode_go_registration(void)
+{
+    return &s_opencode_go_registration;
 }

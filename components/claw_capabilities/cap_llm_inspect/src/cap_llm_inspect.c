@@ -61,6 +61,12 @@ static esp_err_t cap_llm_inspect_execute(const char *input_json,
     request.user_prompt = prompt_json->valuestring;
     request.media = &asset;
     request.media_count = 1;
+    /*
+     * opencode-go provider support (added): borrowed session id for the
+     * "x-opencode-session" header; ignored by backends without a
+     * session_header_name in their registration.
+     */
+    request.session_id = ctx ? ctx->session_id : NULL;
     err = claw_core_llm_infer_media(ctx->core, &request, &analysis, &error_message);
     cJSON_Delete(root);
     if (err != ESP_OK) {

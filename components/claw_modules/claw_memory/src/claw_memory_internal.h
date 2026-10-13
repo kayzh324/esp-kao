@@ -22,8 +22,8 @@
 #define CLAW_MEMORY_MAX_LABEL_TEXT               40
 #define CLAW_MEMORY_MAX_ACTIVE_ITEMS             128
 #define CLAW_MEMORY_COMPACT_CHANGE_THRESHOLD     5
-#define CLAW_MEMORY_COMPACT_SIZE_THRESHOLD       (32 * 1024)
-#define CLAW_MEMORY_SESSION_SIZE_LIMIT           (150 * 1024)
+#define CLAW_MEMORY_COMPACT_SIZE_THRESHOLD       (64 * 1024) //扩大了一倍
+#define CLAW_MEMORY_SESSION_SIZE_LIMIT           (300 * 1024) // 扩大了一倍session history的大小
 #define CLAW_MEMORY_RECALL_DEFAULT_LIMIT         8
 #define CLAW_MEMORY_RECORDS_FILE                 "memory_records.jsonl"
 #define CLAW_MEMORY_INDEX_FILE                   "memory_index.json"
@@ -108,6 +108,7 @@ esp_err_t ensure_file_with_default(const char *path, const char *default_text);
 esp_err_t claw_memory_join_path(char *dst, size_t dst_size, const char *dir, const char *name);
 
 esp_err_t claw_memory_auto_extract_prepare_with_runtime(claw_llm_runtime_t *runtime,
+                                                        const char *session_id,
                                                         const char *user_text,
                                                         claw_memory_message_intent_t *out_message_intent,
                                                         char **out_llm_text);

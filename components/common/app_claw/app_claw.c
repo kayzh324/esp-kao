@@ -65,7 +65,8 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Skills are user-facing functions, while Capabilities are internal functions used by the model. " \
     "When communicating with the user, refer to skills instead of Capabilities. " \
     "Prefer skill-driven execution and keep long-running planning, investigation, implementation, debugging, and verification work isolated in subagents when available. " \
-    "Keep user-facing answers focused on current status, useful results, and clear next steps.\n"
+    "Keep user-facing answers focused on current status, useful results, and clear next steps."\
+    "You have at most 30 rounds per turn; MUST plan and finish decisively within that budget."
 
 #define APP_ROOT_AGENT_SYSTEM_PROMPT \
     "You are the root agent. Own the user-facing conversation and keep the session responsive. " \
@@ -73,7 +74,8 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "If a task cannot be completed quickly through an available skill, briefly tell the user what is happening, then delegate the planning, investigation, implementation, debugging, or verification work to an appropriate subagent. " \
     "Track the user's goal, selected skills, delegated agent ids, task status, blockers, and concise results. " \
     "Do not accumulate detailed implementation logs, long intermediate reasoning, or large artifacts in the root conversation unless they are needed for the final user response. " \
-    "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."
+    "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."\
+    "Send 'Keep going and report ASAP.' to a running sub agent via 'send_agent_followup' Callable method before 'inspect_agent' can boost sub agent's working."
 
 #define APP_SUBAGENT_SYSTEM_PROMPT \
     "You are a subagent spawned by the root agent. Handle long-running, scoped work delegated by the root agent. " \

@@ -1,0 +1,87 @@
+version: 1.0.0
+
+
+
+peripherals:
+  - name: i2c_master
+    type: i2c
+    role: master
+    config:
+      port: 0
+      pins:
+        sda: 1
+        scl: 2
+
+
+  
+  - name: i2s_audio_out
+    type: i2s
+    role: master
+    format: pdm-out
+    config:
+      sample_rate_hz: 16000
+      clk_src: I2S_CLK_SRC_DEFAULT
+      mclk_multiple: 256
+      up_sample_fp: 960
+      up_sample_fs: 441
+      bclk_div: 8
+      data_bit_width: 16
+      slot_bit_width: I2S_SLOT_BIT_WIDTH_AUTO
+      slot_mode: I2S_SLOT_MODE_MONO
+      slot_mask: I2S_PDM_SLOT_LEFT
+      data_fmt: "I2S_PDM_DATA_FMT_PCM"
+      sd_prescale: 0
+      sd_scale: I2S_PDM_SIG_SCALING_MUL_4
+      hp_scale: I2S_PDM_SIG_SCALING_MUL_4
+      lp_scale: I2S_PDM_SIG_SCALING_MUL_4
+      sinc_scale: I2S_PDM_SIG_SCALING_MUL_4
+      line_mode: I2S_PDM_TX_ONE_LINE_CODEC
+      hp_en: false
+      hp_cut_off_freq_hz: 35.5
+      sd_dither: 0
+      sd_dither2: 1
+      pins:
+        dout: 15                    # [IO] Data output pin
+      invert_flags:
+        clk_inv: false
+
+  # Shared SPI bus for the 2-in-1 module: ILI9341 display + XPT2046 touch .
+  # Each device declares its own CS and its own clock in board_devices.yaml; the
+  # SPI master driver arbitrates transactions and reprograms the divider per device,
+  # so the two do NOT have to agree on a frequency.
+  - name: spi_master
+    type: spi
+    role: master
+    config:
+      # spi_bus_config_t fields
+      spi_bus_config:
+        spi_port:  SPI2_HOST               # 0: SPI1_HOST, 1: SPI2_HOST, 2: SPI3_HOST
+        mosi_io_num: 11                   # [IO] MOSI / data0
+        miso_io_num: 13                   # [IO] MISO / data1 - required by XPT2046 
+        sclk_io_num: 12                   # [IO] SPI clock signal
+        max_transfer_sz: 32768            # esp_lcd splits colour data into chunks of this size
+
+  - name: spi_sdcard
+    type: spi
+    role: master
+    config:
+      # spi_bus_config_t fields
+      spi_bus_config:
+        spi_port:  SPI3_HOST               # 0: SPI1_HOST, 1: SPI2_HOST, 2: SPI3_HOST
+        mosi_io_num: 6                   # [IO] MOSI / data0
+        miso_io_num: 5                   # [IO] MISO / data1 - required by XPT2046 
+        sclk_io_num: 7                   # [IO] SPI clock signal
+        max_transfer_sz: 4096
+  
+
+
+  # LCD BACKLIGHT CONTROL
+  - name: ledc_backlight
+    type: ledc
+    role: none
+    config:
+      gpio_num: 16
+      freq_hz: 5000
+      duty: 0
+      duty_resolution: LEDC_TIMER_10_BIT
+      output_invert: true

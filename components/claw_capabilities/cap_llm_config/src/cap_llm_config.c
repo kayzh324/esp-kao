@@ -93,6 +93,19 @@ static const cap_llm_preset_t s_presets[] = {
         .supports_vision = "true",
         .image_remote_url_only = "false",
     },
+    /* opencode-go provider support (added) - do not drop on project update. */
+    {
+        .id = "opencode",
+        .backend_type = "opencode_go",
+        .base_url = "https://opencode.ai/zen/go",
+        .auth_type = "bearer",
+        .model = "deepseek-v4.1-flash",
+        .max_tokens_field = "max_tokens",
+        .default_image_max_bytes = "524288",
+        .supports_tools = "true",
+        .supports_vision = "true",
+        .image_remote_url_only = "false",
+    },
 };
 
 static const char *s_usage =
@@ -102,6 +115,8 @@ static const char *s_usage =
     "/llm setup openai <api_token> [model]\n"
     "/llm setup qwen <api_token> [model]\n"
     "/llm setup anthropic <api_token> [model]\n"
+    /* opencode-go provider support (added) - do not drop on project update. */
+    "/llm setup opencode <api_token> [model]\n"
     "/llm setup custom backend=<backend> url=<base_url> model=<model> token=<api_token>\n"
     "/llm token <api_token>\n"
     "/llm model <model>\n"

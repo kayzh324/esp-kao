@@ -32,6 +32,13 @@ typedef struct {
     const char *auth_type;
     const char *chat_path;
     const char *max_tokens_field;
+    /*
+     * opencode-go provider support (added): optional per-session HTTP header
+     * name (e.g. "x-opencode-session"). NULL for all existing backends, so
+     * their request behavior is unchanged. Set only in the opencode_go
+     * registration below.
+     */
+    const char *session_header_name;
 } claw_llm_backend_defaults_t;
 
 typedef struct {

@@ -306,12 +306,15 @@ static int lua_module_storage_get_free_space(lua_State *L)
         return luaL_error(L, "failed to query storage free space: %s", esp_err_to_name(err));
     }
 
+    // This Lua build uses 32-bit integers (LUA_32BITS), so lua_pushinteger would
+    // wrap byte counts at or above 2 GiB (e.g. an 8 GB SD card reports negative).
+    // Push as Lua numbers instead; capacities stay within float range.
     lua_newtable(L);
-    lua_pushinteger(L, (lua_Integer)total);
+    lua_pushnumber(L, (lua_Number)total);
     lua_setfield(L, -2, "total");
-    lua_pushinteger(L, (lua_Integer)free_bytes);
+    lua_pushnumber(L, (lua_Number)free_bytes);
     lua_setfield(L, -2, "free");
-    lua_pushinteger(L, (lua_Integer)(total - free_bytes));
+    lua_pushnumber(L, (lua_Number)(total - free_bytes));
     lua_setfield(L, -2, "used");
     return 1;
 }

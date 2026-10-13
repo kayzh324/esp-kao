@@ -24,7 +24,7 @@ This module describes how to correctly use storage when writing Lua scripts.
 - `storage.listdir(path)` returns an array of entries. Each entry includes `name`, `type`, and, when available, `size`, `mtime`, and `mode`.
 - `storage.mkdir(path)`, `storage.write_file(path, content)`, `storage.remove(path)`, and `storage.rename(old_path, new_path)` return `true` on success.
 - `storage.read_file(path)` returns the file contents as a string.
-- `storage.get_free_space()` returns `{ total, free, used }`.
+- `storage.get_free_space()` returns `{ total, free, used }` in bytes. The values are Lua numbers, not integers: capacities at or above 2 GiB overflow this build's 32-bit integers, so they are returned as numbers (rounded to the nearest representable value).
 
 ## Path joining
 - Prefer `storage.join_path(...)` whenever building a path from `storage.get_root_dir()` and child names.

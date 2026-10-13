@@ -24,7 +24,9 @@ type PresetKey =
   | 'minimax_global'
   | 'minimax_cn'
   | 'anthropic_compatible'
-  | 'openai_compatible';
+  | 'openai_compatible'
+  /* opencode-go provider support (added) - do not drop on project update. */
+  | 'opencode_go';
 
 type ProviderPreset = {
   llm_backend_type: string;
@@ -160,6 +162,19 @@ const PROVIDER_PRESETS: Record<PresetKey, ProviderPreset> = {
     llm_model: 'claude-sonnet-4-6',
     advanced: true,
   },
+  /* opencode-go provider support (added) - do not drop on project update. */
+  opencode_go: {
+    llm_backend_type: 'opencode_go',
+    llm_base_url: 'https://opencode.ai/zen/go',
+    llm_auth_type: 'bearer',
+    llm_max_tokens_field: 'max_tokens',
+    llm_default_image_max_bytes: '524288',
+    llm_supports_tools: true,
+    llm_supports_vision: true,
+    llm_image_remote_url_only: false,
+    llm_model: 'deepseek-v4.1-flash',
+    advanced: false,
+  },
 };
 
 const PRESET_BUTTONS: PresetKey[] = [
@@ -173,6 +188,8 @@ const PRESET_BUTTONS: PresetKey[] = [
   'minimax_cn',
   'openai_compatible',
   'anthropic_compatible',
+  /* opencode-go provider support (added) - do not drop on project update. */
+  'opencode_go',
 ];
 
 type LlmForm = {
@@ -220,6 +237,9 @@ function presetLabel(key: PresetKey): string {
       return t('llmProviderOpenaiCompatible') as string;
     case 'anthropic_compatible':
       return t('llmProviderAnthropicCompatible') as string;
+    /* opencode-go provider support (added) - do not drop on project update. */
+    case 'opencode_go':
+      return t('llmProviderOpencodeGo') as string;
   }
 }
 

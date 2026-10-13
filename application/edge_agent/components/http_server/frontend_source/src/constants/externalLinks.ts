@@ -36,6 +36,11 @@ const PROVIDER_LINKS: Record<string, ExternalLinkPair> = {
     docsUrl: 'https://platform.minimaxi.com/docs/api-reference/api-overview',
     consoleUrl: 'https://platform.minimaxi.com/user-center/basic-information',
   },
+  /* opencode-go provider support (added) - do not drop on project update. */
+  opencode_go: {
+    docsUrl: 'https://opencode.ai/zen/go',
+    consoleUrl: 'https://opencode.ai/zen/go',
+  },
 };
 
 export const TAVILY_API_KEY_URL = 'https://app.tavily.com/';

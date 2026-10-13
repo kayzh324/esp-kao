@@ -22,30 +22,41 @@
 #include "freertos/task.h"
 #include "lauxlib.h"
 
-#define LUA_MODULE_SCD41_NAME              "scd41_sensor"
-#define LUA_MODULE_SCD41_METATABLE         "scd41_sensor.device"
-#define LUA_MODULE_SCD41_DEFAULT_NAME      "scd41_sensor"
-#define LUA_MODULE_SCD41_MAX_NAME_LEN      64
-#define LUA_MODULE_SCD41_DEFAULT_FREQ_HZ   100000
-#define LUA_MODULE_SCD41_DEFAULT_TIMEOUT   1000
+#define LUA_MODULE_SCD41_NAME                    "scd41_sensor"
+#define LUA_MODULE_SCD41_METATABLE               "scd41_sensor.device"
+#define LUA_MODULE_SCD41_DEFAULT_NAME            "scd41_sensor"
+#define LUA_MODULE_SCD41_MAX_NAME_LEN            64
+#define LUA_MODULE_SCD41_DEFAULT_FREQ_HZ         100000
+#define LUA_MODULE_SCD41_DEFAULT_TIMEOUT         1000
+/* One SCD41 conversion cycle is ~5 s; allow a little slack for the first read. */
+#define LUA_MODULE_SCD41_DEFAULT_READY_TIMEOUT   6000
+#define LUA_MODULE_SCD41_RETRY_INTERVAL_MS       500
 
 #define SCD41_I2C_ADDR                     0x62
 
 #define SCD41_START_MEASUREMENT            0x21B1
 #define SCD41_STOP_MEASUREMENT             0x3F86
 #define SCD41_READ_MEASUREMENT             0xEC05
-#define SCD41_GET_SERIAL_NUMBER            0x3682
-#define SCD41_RESET                        0x3646
-#define SCD41_DATA_READY                   0xE4B8
+
+typedef struct {
+    uint16_t co2_ppm;
+    float temperature;
+    float humidity;
+} scd41_data_t;
 
 typedef struct {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t dev;
     uint8_t i2c_addr;
     uint32_t timeout_ms;
+    uint32_t ready_timeout_ms;
     bool initialized;
     bool measurement_started;
     bool peripheral_ref_held;
+    /* Latest successfully read sample, shared by read()/read_co2()/... so that
+     * sub-5 s reads return this instead of failing a too-early I2C read. */
+    bool has_sample;
+    scd41_data_t last_sample;
     char peripheral_name[LUA_MODULE_SCD41_MAX_NAME_LEN];
 } lua_module_scd41_handle_t;
 
@@ -53,13 +64,6 @@ typedef struct {
     lua_module_scd41_handle_t *handle;
     char device_name[LUA_MODULE_SCD41_MAX_NAME_LEN];
 } lua_module_scd41_ud_t;
-
-typedef struct {
-    uint16_t co2_ppm;
-    float temperature;
-    float humidity;
-    bool data_ready;
-} scd41_data_t;
 
 static const char *TAG = "lua_module_scd41";
 
@@ -96,7 +100,7 @@ static esp_err_t lua_module_scd41_write_command(lua_module_scd41_handle_t *handl
     esp_err_t ret = i2c_master_transmit(handle->dev, cmd_buffer, sizeof(cmd_buffer),
                                         handle->timeout_ms);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C write command failed: %s", esp_err_to_name(ret));
+        ESP_LOGD(TAG, "I2C write command failed: %s", esp_err_to_name(ret));
     }
     return ret;
 }
@@ -111,7 +115,7 @@ static esp_err_t lua_module_scd41_read_data(lua_module_scd41_handle_t *handle,
 
     esp_err_t ret = i2c_master_receive(handle->dev, data, length, handle->timeout_ms);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C read data failed: %s", esp_err_to_name(ret));
+        ESP_LOGD(TAG, "I2C read data failed: %s", esp_err_to_name(ret));
     }
     return ret;
 }
@@ -139,7 +143,7 @@ static esp_err_t lua_module_scd41_read_measurement(lua_module_scd41_handle_t *ha
     for (int i = 0; i < 3; i++) {
         uint8_t expected_crc = lua_module_scd41_crc8(&buffer[i * 3], 2);
         if (buffer[i * 3 + 2] != expected_crc) {
-            ESP_LOGE(TAG, "CRC mismatch for measurement %d", i);
+            ESP_LOGD(TAG, "CRC mismatch for measurement %d", i);
             return ESP_ERR_INVALID_CRC;
         }
     }
@@ -152,12 +156,90 @@ static esp_err_t lua_module_scd41_read_measurement(lua_module_scd41_handle_t *ha
     uint16_t hum_raw = (buffer[6] << 8) | buffer[7];
     data->humidity = 100.0f * ((float)hum_raw / 65535.0f);
 
-    data->data_ready = true;
-
     ESP_LOGD(TAG, "SCD41 - CO2: %d ppm, Temp: %.1f°C, Humidity: %.1f%%",
              data->co2_ppm, data->temperature, data->humidity);
 
     return ESP_OK;
+}
+
+/* ESP-IDF reports a device NACK as ESP_ERR_INVALID_STATE, and the SCD41 NACKs
+ * its I2C commands while a conversion cycle is still in progress. Such failures
+ * are transient: the caller keeps retrying instead of treating them as fatal
+ * (treating them as fatal is what made reads fail instantly before). */
+static bool lua_module_scd41_is_retryable(esp_err_t err)
+{
+    return err == ESP_ERR_INVALID_STATE ||
+           err == ESP_ERR_TIMEOUT ||
+           err == ESP_ERR_INVALID_CRC;
+}
+
+/*
+ * Return the newest available measurement.
+ *
+ * The SCD41 only answers a measurement read once a conversion cycle has
+ * completed, NACKing in between. With force_fresh false and a cached sample a
+ * single attempt is made: a new sample is returned when the read succeeds,
+ * otherwise the cached sample is returned, so reads issued faster than the ~5 s
+ * cycle never fail. Otherwise this blocks, retrying until a sample is read or
+ * ready_timeout_ms elapses.
+ */
+static esp_err_t lua_module_scd41_acquire(lua_module_scd41_handle_t *handle,
+                                          bool force_fresh,
+                                          scd41_data_t *out)
+{
+    if (handle == NULL || !handle->initialized || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!handle->measurement_started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(handle->ready_timeout_ms);
+
+    for (;;) {
+        scd41_data_t fresh = { 0 };
+        esp_err_t err = lua_module_scd41_read_measurement(handle, &fresh);
+        if (err == ESP_OK) {
+            handle->last_sample = fresh;
+            handle->has_sample = true;
+            *out = fresh;
+            return ESP_OK;
+        }
+        if (!lua_module_scd41_is_retryable(err)) {
+            return err;
+        }
+        /* No new sample yet: serve the cached one rather than block. */
+        if (!force_fresh && handle->has_sample) {
+            *out = handle->last_sample;
+            return ESP_OK;
+        }
+        if ((xTaskGetTickCount() - start) >= timeout_ticks) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(LUA_MODULE_SCD41_RETRY_INTERVAL_MS));
+    }
+}
+
+static int lua_module_scd41_raise_read_error(lua_State *L, lua_module_scd41_ud_t *ud,
+                                             const char *op, esp_err_t err)
+{
+    switch (err) {
+    case ESP_ERR_INVALID_STATE:
+        return luaL_error(L, "scd41_sensor %s: measurement not started "
+                             "(call start_measurement or use auto_start)", op);
+    case ESP_ERR_TIMEOUT:
+        /* lua_pushfstring only supports %d/%s/%f/%p/%U/%I, so no %u here. */
+        return luaL_error(L, "scd41_sensor %s: no new measurement within %d ms "
+                             "(check sensor wiring and power)", op,
+                          (int)ud->handle->ready_timeout_ms);
+    case ESP_ERR_INVALID_CRC:
+        return luaL_error(L, "scd41_sensor %s: CRC check failed, I2C data corrupted", op);
+    case ESP_ERR_INVALID_ARG:
+        return luaL_error(L, "scd41_sensor %s: invalid handle or buffer", op);
+    default:
+        return luaL_error(L, "scd41_sensor %s: I2C error: %s", op, esp_err_to_name(err));
+    }
 }
 
 static void lua_module_scd41_destroy_handle(lua_module_scd41_handle_t *handle)
@@ -180,6 +262,8 @@ typedef struct {
     int i2c_addr;
     int frequency;
     uint32_t timeout_ms;
+    uint32_t ready_timeout_ms;
+    bool auto_start;
     bool has_peripheral;
     bool has_frequency;
 } lua_scd41_resolved_cfg_t;
@@ -280,6 +364,18 @@ static void lua_module_scd41_apply_lua_overrides(lua_State *L, int opts_idx,
         cfg->timeout_ms = (uint32_t)lua_tointeger(L, -1);
     }
     lua_pop(L, 1);
+
+    lua_getfield(L, opts_idx, "ready_timeout_ms");
+    if (lua_isnumber(L, -1)) {
+        cfg->ready_timeout_ms = (uint32_t)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, opts_idx, "auto_start");
+    if (lua_isboolean(L, -1)) {
+        cfg->auto_start = lua_toboolean(L, -1);
+    }
+    lua_pop(L, 1);
 }
 
 static void lua_module_scd41_release(lua_module_scd41_handle_t *handle)
@@ -308,6 +404,7 @@ static esp_err_t lua_module_scd41_create_handle(const lua_scd41_resolved_cfg_t *
     snprintf(handle->peripheral_name, sizeof(handle->peripheral_name), "%s", cfg->peripheral_name);
     handle->i2c_addr = (uint8_t)cfg->i2c_addr;
     handle->timeout_ms = cfg->timeout_ms;
+    handle->ready_timeout_ms = cfg->ready_timeout_ms;
 
     esp_err_t err = esp_board_periph_ref_handle(cfg->peripheral_name, (void **)&handle->bus);
     if (err != ESP_OK) {
@@ -342,6 +439,17 @@ static esp_err_t lua_module_scd41_create_handle(const lua_scd41_resolved_cfg_t *
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (cfg->auto_start) {
+        err = lua_module_scd41_write_command(handle, SCD41_START_MEASUREMENT);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start SCD41 measurement: %s", esp_err_to_name(err));
+            lua_module_scd41_release(handle);
+            free(handle);
+            return err;
+        }
+        handle->measurement_started = true;
+    }
 
     *out_handle = handle;
     ESP_LOGI(TAG, "SCD41 initialized on %s (I2C 0x%02x), timeout %u ms",
@@ -400,14 +508,22 @@ static int lua_module_scd41_name(lua_State *L)
 static int lua_module_scd41_read(lua_State *L)
 {
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
-    scd41_data_t data = { 0 };
 
-    if (lua_module_scd41_read_measurement(ud->handle, &data) != ESP_OK) {
-        return luaL_error(L, "scd41_sensor read failed");
+    bool force_fresh = false;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "fresh");
+        force_fresh = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+    }
+
+    scd41_data_t data = { 0 };
+    esp_err_t err = lua_module_scd41_acquire(ud->handle, force_fresh, &data);
+    if (err != ESP_OK) {
+        return lua_module_scd41_raise_read_error(L, ud, "read", err);
     }
 
     lua_newtable(L);
-    lua_pushnumber(L, data.co2_ppm);
+    lua_pushinteger(L, data.co2_ppm);
     lua_setfield(L, -2, "co2");
     lua_pushnumber(L, data.temperature);
     lua_setfield(L, -2, "temperature");
@@ -421,8 +537,9 @@ static int lua_module_scd41_read_co2(lua_State *L)
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
     scd41_data_t data = { 0 };
 
-    if (lua_module_scd41_read_measurement(ud->handle, &data) != ESP_OK) {
-        return luaL_error(L, "scd41_sensor read_co2 failed");
+    esp_err_t err = lua_module_scd41_acquire(ud->handle, false, &data);
+    if (err != ESP_OK) {
+        return lua_module_scd41_raise_read_error(L, ud, "read_co2", err);
     }
 
     lua_pushinteger(L, data.co2_ppm);
@@ -434,8 +551,9 @@ static int lua_module_scd41_read_temperature(lua_State *L)
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
     scd41_data_t data = { 0 };
 
-    if (lua_module_scd41_read_measurement(ud->handle, &data) != ESP_OK) {
-        return luaL_error(L, "scd41_sensor read_temperature failed");
+    esp_err_t err = lua_module_scd41_acquire(ud->handle, false, &data);
+    if (err != ESP_OK) {
+        return lua_module_scd41_raise_read_error(L, ud, "read_temperature", err);
     }
 
     lua_pushnumber(L, data.temperature);
@@ -447,8 +565,9 @@ static int lua_module_scd41_read_humidity(lua_State *L)
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
     scd41_data_t data = { 0 };
 
-    if (lua_module_scd41_read_measurement(ud->handle, &data) != ESP_OK) {
-        return luaL_error(L, "scd41_sensor read_humidity failed");
+    esp_err_t err = lua_module_scd41_acquire(ud->handle, false, &data);
+    if (err != ESP_OK) {
+        return lua_module_scd41_raise_read_error(L, ud, "read_humidity", err);
     }
 
     lua_pushnumber(L, data.humidity);
@@ -459,10 +578,18 @@ static int lua_module_scd41_start_measurement(lua_State *L)
 {
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
 
+    /* Idempotent: starting an already-running measurement makes the sensor
+     * NACK, so treat it as a no-op instead of raising. */
+    if (ud->handle->measurement_started) {
+        return 0;
+    }
+
     if (lua_module_scd41_write_command(ud->handle, SCD41_START_MEASUREMENT) != ESP_OK) {
         return luaL_error(L, "scd41_sensor start_measurement failed");
     }
 
+    /* Prior sample belongs to the previous measurement session. */
+    ud->handle->has_sample = false;
     ud->handle->measurement_started = true;
     return 0;
 }
@@ -470,6 +597,10 @@ static int lua_module_scd41_start_measurement(lua_State *L)
 static int lua_module_scd41_stop_measurement(lua_State *L)
 {
     lua_module_scd41_ud_t *ud = lua_module_scd41_get_ud(L, 1);
+
+    if (!ud->handle->measurement_started) {
+        return 0;
+    }
 
     if (lua_module_scd41_write_command(ud->handle, SCD41_STOP_MEASUREMENT) != ESP_OK) {
         return luaL_error(L, "scd41_sensor stop_measurement failed");
@@ -506,6 +637,8 @@ static int lua_module_scd41_new(lua_State *L)
         .i2c_addr = SCD41_I2C_ADDR,
         .frequency = LUA_MODULE_SCD41_DEFAULT_FREQ_HZ,
         .timeout_ms = LUA_MODULE_SCD41_DEFAULT_TIMEOUT,
+        .ready_timeout_ms = LUA_MODULE_SCD41_DEFAULT_READY_TIMEOUT,
+        .auto_start = true,
     };
 
     esp_err_t err = lua_module_scd41_load_board_defaults(device_name, &cfg);

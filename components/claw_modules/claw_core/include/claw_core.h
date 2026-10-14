@@ -66,6 +66,10 @@ typedef enum {
     CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL = 2,
     CLAW_CORE_CONTEXT_RECORD_ASSISTANT_TOOL = 3,
     CLAW_CORE_CONTEXT_RECORD_TOOL_RESULT = 4,
+    /* session-projection (added): a structured summary that replaces all records
+     * before its keep_from index when history is replayed. Never sent verbatim;
+     * the loader converts it into a leading system message. */
+    CLAW_CORE_CONTEXT_RECORD_SUMMARY = 5,
 } claw_core_context_record_type_t;
 
 typedef struct {

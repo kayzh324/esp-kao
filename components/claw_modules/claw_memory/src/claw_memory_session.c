@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "claw_utils_string.h"
 #include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -43,6 +44,10 @@ typedef struct claw_memory_async_extract_job {
     TickType_t completed_ticks;
     esp_err_t result;
     bool completed;
+    /* session-projection (added): when compact is set this job summarizes the
+     * history up to keep_from instead of extracting memory facts. */
+    bool compact;
+    uint32_t keep_from;
     SemaphoreHandle_t done_sem;
     struct claw_memory_async_extract_job *next;
 } claw_memory_async_extract_job_t;
@@ -65,6 +70,9 @@ typedef struct {
 static claw_memory_pending_summary_t *s_pending_summaries = NULL;
 static claw_memory_async_extract_state_t s_async_extract = {0};
 static claw_memory_request_state_t *s_request_states = NULL;
+
+/* session-projection (added): runs on the async task to summarize old history. */
+static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_t keep_from);
 
 typedef struct {
     uint32_t offset;
@@ -284,6 +292,19 @@ static void claw_memory_async_extract_task(void *arg)
             continue;
         }
         if (!job) {
+            continue;
+        }
+
+        /* session-projection (added): compaction jobs are self-contained and are
+         * freed here; they are not tracked by the extract consumer path. */
+        if (job->compact) {
+            esp_err_t cerr = claw_memory_session_compact_run(job->session_id, job->keep_from);
+
+            if (cerr != ESP_OK) {
+                ESP_LOGW(TAG, "compaction job failed session=%s: %s",
+                         job->session_id ? job->session_id : "?", esp_err_to_name(cerr));
+            }
+            claw_memory_async_extract_free_job(job);
             continue;
         }
 
@@ -577,6 +598,7 @@ static bool session_history_record_type_valid(uint8_t record_type)
     case CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL:
     case CLAW_CORE_CONTEXT_RECORD_ASSISTANT_TOOL:
     case CLAW_CORE_CONTEXT_RECORD_TOOL_RESULT:
+    case CLAW_CORE_CONTEXT_RECORD_SUMMARY:
         return true;
     default:
         return false;
@@ -1009,6 +1031,10 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
     char *json = NULL;
     size_t i;
     esp_err_t err = ESP_OK;
+    /* session-projection (added): the latest summary record replaces every record
+     * before its keep_from index when history is replayed. */
+    size_t keep_from = 0;
+    char *summary_text = NULL;
 
     if (!file || !index || !out_json || index->count == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -1020,6 +1046,56 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
         return ESP_ERR_NO_MEM;
     }
 
+    /* Pass 1: find the latest summary record. */
+    for (i = 0; i < index->count; i++) {
+        const claw_memory_session_index_entry_t *entry = &index->entries[i];
+        char *record_text = NULL;
+        cJSON *record = NULL;
+        cJSON *sum = NULL;
+        cJSON *kf = NULL;
+
+        if (entry->record_type != CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
+            continue;
+        }
+        err = session_history_read_record_text(file, entry, &record_text);
+        if (err != ESP_OK) {
+            goto cleanup;
+        }
+        record = cJSON_ParseWithOpts(record_text, NULL, 1);
+        free(record_text);
+        if (!record) {
+            err = ESP_ERR_INVALID_STATE;
+            goto cleanup;
+        }
+        sum = cJSON_GetObjectItemCaseSensitive(record, "summary");
+        kf = cJSON_GetObjectItemCaseSensitive(record, "keep_from");
+        if (cJSON_IsString(sum) && cJSON_IsNumber(kf)) {
+            char *dup = dup_printf("%s", sum->valuestring);
+
+            if (!dup) {
+                cJSON_Delete(record);
+                err = ESP_ERR_NO_MEM;
+                goto cleanup;
+            }
+            free(summary_text);
+            summary_text = dup;
+            keep_from = (size_t)kf->valueint;
+        }
+        cJSON_Delete(record);
+    }
+
+    if (summary_text) {
+        cJSON *summary_msg = cJSON_CreateObject();
+
+        if (!summary_msg) {
+            err = ESP_ERR_NO_MEM;
+            goto cleanup;
+        }
+        cJSON_AddStringToObject(summary_msg, "role", "system");
+        cJSON_AddStringToObject(summary_msg, "content", summary_text);
+        cJSON_AddItemToArray(records, summary_msg);
+    }
+
     for (i = 0; i < index->count; i++) {
         const claw_memory_session_index_entry_t *entry;
         claw_core_context_record_type_t type;
@@ -1028,6 +1104,12 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
 
         entry = &index->entries[i];
         type = (claw_core_context_record_type_t)entry->record_type;
+
+        /* Records before the keep point are represented by the summary; summary
+         * records themselves never become messages. */
+        if (i < keep_from || type == CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
+            continue;
+        }
 
         err = session_history_read_record_text(file, entry, &record_text);
         if (err != ESP_OK) {
@@ -1085,6 +1167,7 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
     json = NULL;
 
 cleanup:
+    free(summary_text);
     if (json) {
         cJSON_free(json);
     }
@@ -1844,6 +1927,498 @@ static const char *claw_memory_session_record_text_role(claw_core_context_record
     }
 }
 
+/* ===== session-projection (added) ==========================================
+ * The stored transcript stays append-only and complete. When the replayed part
+ * grows past a trigger, an async job summarizes everything before a keep point
+ * into one structured record; replay then sends [summary] + records after the
+ * keep point, so long sessions keep their decisions without replaying everything.
+ * ========================================================================== */
+
+#define CLAW_MEMORY_PROJECT_TRIGGER_CHARS (48 * 1024)
+#define CLAW_MEMORY_PROJECT_KEEP_CHARS    (24 * 1024)
+#define CLAW_MEMORY_PROJECT_TOOL_MAX_CHARS 1500
+#define CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS (40 * 1024)
+
+static const char *CLAW_MEMORY_PROJECT_SYSTEM_PROMPT =
+    "You compress an ongoing conversation into a compact working summary so an assistant can continue "
+    "without the full transcript. Preserve: the user's goal and constraints; decisions made and why; "
+    "what has been done; files created or modified; the current state; unresolved problems; and the "
+    "next steps. Drop greetings, restated tool output, and reasoning. Output plain text with short "
+    "labelled sections. Be specific and factual; never invent details.";
+
+typedef struct {
+    char *buf;
+    size_t len;
+    size_t cap;
+} claw_memory_sbuf_t;
+
+static bool claw_memory_sbuf_append(claw_memory_sbuf_t *sb, const char *s, size_t max_total)
+{
+    size_t n;
+    size_t need;
+    size_t cap;
+    char *grown;
+
+    if (!sb || !s) {
+        return true;
+    }
+    n = strlen(s);
+    if (max_total && sb->len + n > max_total) {
+        n = (sb->len < max_total) ? (max_total - sb->len) : 0;
+    }
+    if (n == 0) {
+        return true;
+    }
+    need = sb->len + n + 1;
+    if (need > sb->cap) {
+        cap = sb->cap ? sb->cap : 4096;
+        while (cap < need) {
+            cap *= 2;
+        }
+        grown = realloc(sb->buf, cap);
+        if (!grown) {
+            return false;
+        }
+        sb->buf = grown;
+        sb->cap = cap;
+    }
+    memcpy(sb->buf + sb->len, s, n);
+    sb->len += n;
+    sb->buf[sb->len] = '\0';
+    return true;
+}
+
+/* Render records [from, to) as a plain-text transcript for the summary prompt. */
+static esp_err_t session_history_serialize_range(FILE *file,
+                                                 const claw_memory_session_index_t *index,
+                                                 size_t from,
+                                                 size_t to,
+                                                 char **out_text)
+{
+    claw_memory_sbuf_t sb = {0};
+    esp_err_t err = ESP_OK;
+    size_t i;
+
+    if (!file || !index || !out_text || from >= to) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_text = NULL;
+
+    for (i = from; i < to && i < index->count; i++) {
+        const claw_memory_session_index_entry_t *entry = &index->entries[i];
+        claw_core_context_record_type_t type = (claw_core_context_record_type_t)entry->record_type;
+        char *record_text = NULL;
+        cJSON *record = NULL;
+        const char *content = NULL;
+
+        if (type == CLAW_CORE_CONTEXT_RECORD_SUMMARY ||
+                sb.len >= CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS) {
+            continue;
+        }
+
+        err = session_history_read_record_text(file, entry, &record_text);
+        if (err != ESP_OK) {
+            goto done;
+        }
+        record = cJSON_ParseWithOpts(record_text, NULL, 1);
+        free(record_text);
+        if (!record) {
+            err = ESP_ERR_INVALID_STATE;
+            goto done;
+        }
+
+        switch (type) {
+        case CLAW_CORE_CONTEXT_RECORD_USER:
+            claw_memory_sbuf_append(&sb, "[User]: ", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(record, "content"));
+            claw_memory_sbuf_append(&sb, content ? content : "", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            claw_memory_sbuf_append(&sb, "\n", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            break;
+        case CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL:
+            claw_memory_sbuf_append(&sb, "[Assistant]: ", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(record, "content"));
+            claw_memory_sbuf_append(&sb, content ? content : "", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            claw_memory_sbuf_append(&sb, "\n", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            break;
+        case CLAW_CORE_CONTEXT_RECORD_ASSISTANT_TOOL: {
+            cJSON *calls = cJSON_GetObjectItemCaseSensitive(record, "tool_calls");
+            cJSON *call = NULL;
+
+            claw_memory_sbuf_append(&sb, "[Assistant tool calls]: ", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            cJSON_ArrayForEach(call, calls) {
+                cJSON *fn = cJSON_GetObjectItemCaseSensitive(call, "function");
+                const char *name = fn ? cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(fn, "name")) : NULL;
+
+                if (name) {
+                    claw_memory_sbuf_append(&sb, name, CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+                    claw_memory_sbuf_append(&sb, " ", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+                }
+            }
+            claw_memory_sbuf_append(&sb, "\n", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            break;
+        }
+        case CLAW_CORE_CONTEXT_RECORD_TOOL_RESULT: {
+            cJSON *item = NULL;
+
+            /* Tool results are stored as an array of {role:"tool",content}. */
+            cJSON_ArrayForEach(item, record) {
+                char head[32];
+                const char *body = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "content"));
+
+                snprintf(head, sizeof(head), "[Tool result]: ");
+                claw_memory_sbuf_append(&sb, head, CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+                if (body) {
+                    char *truncated = NULL;
+                    size_t keep = claw_utils_utf8_prefix_len(body, CLAW_MEMORY_PROJECT_TOOL_MAX_CHARS);
+
+                    truncated = dup_printf("%.*s", (int)keep, body);
+                    claw_memory_sbuf_append(&sb, truncated ? truncated : body, CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+                    free(truncated);
+                }
+                claw_memory_sbuf_append(&sb, "\n", CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        cJSON_Delete(record);
+    }
+
+    if (!sb.buf) {
+        sb.buf = dup_printf("");
+        if (!sb.buf) {
+            err = ESP_ERR_NO_MEM;
+            goto done;
+        }
+    }
+    *out_text = sb.buf;
+    sb.buf = NULL;
+
+done:
+    free(sb.buf);
+    return err;
+}
+
+static esp_err_t session_history_append_summary_record(const char *session_id,
+                                                       const char *summary,
+                                                       uint32_t keep_from)
+{
+    char *data_path = NULL;
+    char *idx_path = NULL;
+    FILE *data_file = NULL;
+    FILE *idx_file = NULL;
+    cJSON *record = NULL;
+    char *json = NULL;
+    esp_err_t err;
+
+    data_path = claw_memory_session_path_dup(session_id);
+    if (!data_path) {
+        return ESP_ERR_NO_MEM;
+    }
+    idx_path = session_history_idx_path_dup(data_path);
+    if (!idx_path) {
+        free(data_path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = session_history_open_pair_for_append(data_path, idx_path, &data_file, &idx_file);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    record = cJSON_CreateObject();
+    if (!record || !cJSON_AddStringToObject(record, "summary", summary) ||
+            !cJSON_AddNumberToObject(record, "keep_from", (double)keep_from)) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    json = cJSON_PrintUnformatted(record);
+    if (!json) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    err = session_history_append_indexed_record(data_file, idx_file,
+                                                CLAW_CORE_CONTEXT_RECORD_SUMMARY,
+                                                json, NULL, NULL);
+
+done:
+    if (json) {
+        cJSON_free(json);
+    }
+    cJSON_Delete(record);
+    if (data_file) {
+        session_history_close_file(data_file);
+    }
+    if (idx_file) {
+        session_history_close_file(idx_file);
+    }
+    free(data_path);
+    free(idx_path);
+    return err;
+}
+
+/* Summarize records [prev_keep, keep_from) with the LLM and append the summary
+ * record. Runs on the async extract task. */
+static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_t keep_from)
+{
+    char *data_path = NULL;
+    char *idx_path = NULL;
+    FILE *file = NULL;
+    claw_memory_session_index_t index = {0};
+    char *transcript = NULL;
+    char *prev_summary = NULL;
+    size_t prev_keep = 0;
+    cJSON *messages = NULL;
+    cJSON *user_msg = NULL;
+    cJSON *content = NULL;
+    claw_llm_response_t response = {0};
+    char *error_message = NULL;
+    char *user_prompt = NULL;
+    esp_err_t err;
+
+    if (!session_id || !s_async_extract.runtime) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    data_path = claw_memory_session_path_dup(session_id);
+    idx_path = data_path ? session_history_idx_path_dup(data_path) : NULL;
+    if (!data_path || !idx_path) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+
+    err = session_history_validate_pair(data_path, idx_path, &index);
+    if (err != ESP_OK) {
+        goto done;
+    }
+    file = fopen(data_path, "rb");
+    if (!file) {
+        err = ESP_FAIL;
+        goto done;
+    }
+
+    /* Previous summary (if any) so summaries compound. */
+    for (size_t i = 0; i < index.count; i++) {
+        if (index.entries[i].record_type != CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
+            continue;
+        }
+        char *text = NULL;
+        cJSON *rec = NULL;
+
+        if (session_history_read_record_text(file, &index.entries[i], &text) != ESP_OK) {
+            continue;
+        }
+        rec = cJSON_ParseWithOpts(text, NULL, 1);
+        free(text);
+        if (!rec) {
+            continue;
+        }
+        cJSON *s = cJSON_GetObjectItemCaseSensitive(rec, "summary");
+        cJSON *k = cJSON_GetObjectItemCaseSensitive(rec, "keep_from");
+
+        if (cJSON_IsString(s) && cJSON_IsNumber(k)) {
+            free(prev_summary);
+            prev_summary = dup_printf("%s", s->valuestring);
+            prev_keep = (size_t)k->valueint;
+        }
+        cJSON_Delete(rec);
+    }
+
+    if (prev_keep >= keep_from) {
+        err = ESP_OK;  /* nothing new to summarize */
+        goto done;
+    }
+
+    err = session_history_serialize_range(file, &index, prev_keep, keep_from, &transcript);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    user_prompt = dup_printf("Previous summary (may be empty):\n%s\n\nConversation to summarize:\n%s",
+                             prev_summary ? prev_summary : "(none)",
+                             transcript ? transcript : "");
+    if (!user_prompt) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+
+    messages = cJSON_CreateArray();
+    user_msg = cJSON_CreateObject();
+    if (!messages || !user_msg) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    cJSON_AddStringToObject(user_msg, "role", "user");
+    cJSON_AddStringToObject(user_msg, "content", user_prompt);
+    cJSON_AddItemToArray(messages, user_msg);
+    user_msg = NULL;
+
+    err = claw_llm_runtime_chat(s_async_extract.runtime,
+                                &(claw_llm_chat_request_t) {
+                                    .system_prompt = CLAW_MEMORY_PROJECT_SYSTEM_PROMPT,
+                                    .messages = messages,
+                                    .tools_json = NULL,
+                                    .abort_flag = NULL,
+                                    .session_id = session_id,
+                                },
+                                &response,
+                                &error_message);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "compaction llm failed session=%s: %s", session_id,
+                 error_message ? error_message : esp_err_to_name(err));
+        goto done;
+    }
+    if (!response.text || !response.text[0]) {
+        err = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+
+    err = session_history_append_summary_record(session_id, response.text, keep_from);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "compaction wrote summary session=%s keep_from=%" PRIu32 " chars=%u",
+                 session_id, keep_from, (unsigned)strlen(response.text));
+    }
+
+done:
+    if (content) {
+        cJSON_Delete(content);
+    }
+    if (user_msg) {
+        cJSON_Delete(user_msg);
+    }
+    if (messages) {
+        cJSON_Delete(messages);
+    }
+    claw_llm_response_free(&response);
+    free(error_message);
+    free(user_prompt);
+    free(transcript);
+    free(prev_summary);
+    session_history_index_free(&index);
+    if (file) {
+        session_history_close_file(file);
+    }
+    free(data_path);
+    free(idx_path);
+    return err;
+}
+
+/* Enqueue an async compaction job (not tracked by the consumer path). */
+static esp_err_t claw_memory_enqueue_compact_job(const char *session_id, uint32_t keep_from)
+{
+    claw_memory_async_extract_job_t *job = NULL;
+
+    if (!session_id || !s_async_extract.queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    job = calloc(1, sizeof(*job));
+    if (!job) {
+        return ESP_ERR_NO_MEM;
+    }
+    job->session_id = dup_printf("%s", session_id);
+    job->compact = true;
+    job->keep_from = keep_from;
+    if (!job->session_id) {
+        claw_memory_async_extract_free_job(job);
+        return ESP_ERR_NO_MEM;
+    }
+    if (xQueueSend(s_async_extract.queue, &job, 0) != pdTRUE) {
+        claw_memory_async_extract_free_job(job);
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+/* Decide whether the replayed history is too large and, if so, pick a keep point
+ * that never splits an assistant-tool/tool-result pair, then enqueue a summary. */
+static esp_err_t session_history_project_if_needed(const char *session_id,
+                                                   const claw_core_request_t *request,
+                                                   const char *data_path,
+                                                   const char *idx_path)
+{
+    claw_memory_session_index_t index = {0};
+    size_t prev_keep = 0;
+    size_t replay_chars = 0;
+    size_t keep_from;
+    size_t i;
+    esp_err_t err;
+
+    (void)request;
+
+    err = session_history_validate_pair(data_path, idx_path, &index);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* Use the last summary record's keep_from (later ones supersede). */
+    for (i = 0; i < index.count; i++) {
+        FILE *file;
+        char *text = NULL;
+        cJSON *rec = NULL;
+        cJSON *k = NULL;
+
+        if (index.entries[i].record_type != CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
+            continue;
+        }
+        file = fopen(data_path, "rb");
+        if (!file) {
+            continue;
+        }
+        if (session_history_read_record_text(file, &index.entries[i], &text) == ESP_OK) {
+            rec = cJSON_ParseWithOpts(text, NULL, 1);
+        }
+        free(text);
+        session_history_close_file(file);
+        if (!rec) {
+            continue;
+        }
+        k = cJSON_GetObjectItemCaseSensitive(rec, "keep_from");
+        if (cJSON_IsNumber(k)) {
+            prev_keep = (size_t)k->valueint;
+        }
+        cJSON_Delete(rec);
+    }
+
+    for (i = prev_keep; i < index.count; i++) {
+        if (index.entries[i].record_type != CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
+            replay_chars += session_history_record_object_len(&index.entries[i]);
+        }
+    }
+    if (replay_chars <= CLAW_MEMORY_PROJECT_TRIGGER_CHARS) {
+        err = ESP_OK;
+        goto done;
+    }
+
+    /* Keep a recent tail; cut point must not be a bare tool result. */
+    {
+        size_t acc = 0;
+
+        keep_from = index.count;
+        for (i = index.count; i > prev_keep; i--) {
+            acc += session_history_record_object_len(&index.entries[i - 1]);
+            if (acc > CLAW_MEMORY_PROJECT_KEEP_CHARS) {
+                keep_from = i - 1;
+                break;
+            }
+        }
+        while (keep_from < index.count &&
+                index.entries[keep_from].record_type == CLAW_CORE_CONTEXT_RECORD_TOOL_RESULT) {
+            keep_from++;
+        }
+        if (keep_from <= prev_keep || keep_from >= index.count) {
+            err = ESP_OK;  /* nothing meaningful to summarize yet */
+            goto done;
+        }
+    }
+
+    err = claw_memory_enqueue_compact_job(session_id, (uint32_t)keep_from);
+
+done:
+    session_history_index_free(&index);
+    return err;
+}
+
 /* reasoning-strip (added): return a copy of message_json with reasoning_content
  * removed, or NULL when there is nothing to strip (caller keeps the original).
  * The model's chain-of-thought is not needed across turns and would otherwise
@@ -1954,6 +2529,19 @@ cleanup:
     }
     if (err == ESP_OK && batch->turn_completed) {
         err = session_history_compact_if_needed(batch->session_id, batch->request, data_path, idx_path);
+        if (err == ESP_OK) {
+            /* session-projection (added): when replayed history grows past the
+             * trigger, queue a summary of the older part (async). */
+            esp_err_t proj = session_history_project_if_needed(batch->session_id,
+                                                               batch->request,
+                                                               data_path,
+                                                               idx_path);
+
+            if (proj != ESP_OK) {
+                ESP_LOGW(TAG, "projection planning failed session=%s: %s",
+                         batch->session_id, esp_err_to_name(proj));
+            }
+        }
     }
     free(data_path);
     free(idx_path);

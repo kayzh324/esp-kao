@@ -32,6 +32,12 @@ CONFIG_APP_CLAW_LUA_MODULE_CAMERA=y
 CONFIG_APP_CLAW_LUA_MODULE_IMU=y
 CONFIG_LUA_MODULE_IMU_CHIP_QMI8658=y
 
+# Keep the I2C bus wait short. lua's bus:scan() probes addresses 1..126 while
+# holding the bus mutex, and this value is used both as the mutex block time and
+# as the per-transfer timeout in i2c_bus_v2, so the default 200 ms could block
+# touch/IMU/codec for ~25 s on a stuck bus. See the board README.
+CONFIG_I2C_MS_TO_WAIT=100
+
 
 
 

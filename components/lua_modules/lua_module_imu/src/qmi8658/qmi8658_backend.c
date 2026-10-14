@@ -44,6 +44,11 @@ static const char *TAG = "lua_module_imu.qmi8658";
 #define QMI8658_CTRL3_VAL      0x58
 #define QMI8658_CTRL7_VAL      0x03
 
+/* At 31.25 Hz the output registers read 0 for the first few conversion periods
+ * after enabling, which looks like a dead sensor. Wait long enough before the
+ * first read that the caller gets real data. */
+#define QMI8658_SETTLE_MS      300
+
 #define QMI8658_ADDR_LOW       0x6A  /* SA0 = 0 */
 #define QMI8658_ADDR_HIGH      0x6B  /* SA0 = 1 */
 
@@ -97,7 +102,7 @@ static esp_err_t qmi8658_backend_probe(lua_imu_backend_ctx_t *ctx, uint8_t i2c_a
     ESP_RETURN_ON_ERROR(qmi8658_write_reg(ctx, QMI8658_REG_CTRL2, QMI8658_CTRL2_VAL), TAG, "CTRL2 failed");
     ESP_RETURN_ON_ERROR(qmi8658_write_reg(ctx, QMI8658_REG_CTRL3, QMI8658_CTRL3_VAL), TAG, "CTRL3 failed");
     ESP_RETURN_ON_ERROR(qmi8658_write_reg(ctx, QMI8658_REG_CTRL7, QMI8658_CTRL7_VAL), TAG, "CTRL7 failed");
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(QMI8658_SETTLE_MS));
 
     ESP_LOGI(TAG, "QMI8658 initialized at 0x%02x", i2c_addr);
     return ESP_OK;

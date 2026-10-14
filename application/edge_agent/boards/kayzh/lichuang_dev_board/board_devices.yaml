@@ -84,8 +84,11 @@ devices:
         lcd_cmd_bits: 8
         scl_speed_hz: 400000
       touch_config:
-        x_max: 320
-        y_max: 240
+        # The panel's raw touch frame is portrait 240x320. esp_lcd_touch applies
+        # mirror as (x_max - x) BEFORE swap_xy, so x_max/y_max are the mirror axes
+        # and must match the raw ranges (240/320) -- not the 320x240 display size.
+        x_max: 240
+        y_max: 320
         rst_gpio_num: -1
         int_gpio_num: -1
         flags:

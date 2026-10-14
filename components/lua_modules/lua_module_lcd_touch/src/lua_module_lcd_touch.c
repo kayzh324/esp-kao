@@ -319,6 +319,14 @@ static int lua_lcd_touch_poll(lua_State *L)
         just_released = true;
         x = prev_x;
         y = prev_y;
+        /* Compute the final hold time before clearing it; otherwise a release
+         * always reports held_ms = 0 and long-press/drag consumers break. */
+        if (press_start_ms > 0) {
+            held_ms = now_ms - press_start_ms;
+            if (held_ms < 0) {
+                held_ms = 0;
+            }
+        }
         press_start_ms = 0;
     } else {
         x = 0;

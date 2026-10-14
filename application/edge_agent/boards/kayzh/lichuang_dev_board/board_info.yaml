@@ -1,4 +1,7 @@
 board: lichuang_dev_board
 chip: esp32s3
-description: "LichuangDevBoard with ESP32 S3 N16R8"
+# NOTE: this description is written verbatim into a C string literal by bmgr with
+# no escaping. Keep it a SINGLE-quoted YAML scalar, use \n (not real newlines) for
+# line breaks, and never include a double quote.
+description: 'Lichuang Shizhanpai dev board (XD-ESP32S3-V1.0): ESP32-S3-WROOM-1, 16MB flash, 8MB PSRAM.\nI2C bus: SDA=GPIO1, SCL=GPIO2. Do NOT blind-scan this bus (lua i2c bus:scan): it probes addresses 1..126 while holding the bus mutex and can stall touch/IMU/audio; use the known addresses below.\nI2C devices: 0x18 ES8311 (audio DAC); 0x19 PCA9557 (IO expander: IO0=LCD_CS, IO1=speaker amp PA_EN, IO2=camera PWDN); 0x38 FT6x36 (capacitive touch); 0x41 ES7210 (audio ADC, present but disabled); 0x6a QMI8658 (6-axis IMU).\nDisplay: ST7789 320x240 SPI (DC=GPIO39, MOSI=GPIO40, SCK=GPIO41, backlight=GPIO42; CS driven via PCA9557 IO0; no reset GPIO).\nSD card: SDMMC 1-bit (CLK=47, CMD=48, D0=21); when a card is inserted the DATA root becomes /sdcard, otherwise the flash /fatfs.\nCamera: GC0308 DVP (VSYNC=3, HREF/DE=46, PCLK=7, XCLK=5, D0..D7=16,18,8,17,15,6,4,9).\nAudio I2S: MCLK=38, BCLK=14, WS=13, DIN=12, DOUT=45.'
 manufacturer: "lichuang"

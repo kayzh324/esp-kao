@@ -145,20 +145,3 @@ esp_err_t claw_core_persist_context_final_if_configured(claw_core_state_t *core,
 
     return persist_context_batch_if_configured(core, request, records, record_count, true);
 }
-
-char *claw_core_build_context_failure_trace(const char *error_message,
-                                            const char *tool_summary)
-{
-    const char *reason = (error_message && error_message[0]) ? error_message : "unknown error";
-
-    if (tool_summary && tool_summary[0]) {
-        return claw_utils_string_dup_printf("Session note: the previous request failed before producing a final answer.\n"
-                                    "Reason: %s\n%s",
-                                    reason,
-                                    tool_summary);
-    }
-
-    return claw_utils_string_dup_printf("Session note: the previous request failed before producing a final answer.\n"
-                                "Reason: %s",
-                                reason);
-}

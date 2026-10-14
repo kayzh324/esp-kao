@@ -229,8 +229,6 @@ esp_err_t claw_core_persist_context_final_if_configured(claw_core_state_t *core,
 void claw_core_log_context_persist_failure(const claw_core_request_t *request,
                                            const char *operation,
                                            esp_err_t err);
-char *claw_core_build_context_failure_trace(const char *error_message,
-                                            const char *tool_summary);
 
 void claw_core_agent_loop_task(void *arg);
 

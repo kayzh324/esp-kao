@@ -122,6 +122,8 @@ void claw_core_agent_loop_task(void *arg)
          * tool-call round limit, so a parent never sees a silently stuck child. */
         claw_core_completion_type_t completion_outcome = CLAW_CORE_COMPLETION_FAILED;
         bool completion_notified = false;
+        /* llm-retry (added): one retry of the first LLM call of a turn. */
+        bool llm_retry_used = false;
 
         if (xQueueReceive(core->request_queue, &request, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -337,6 +339,19 @@ void claw_core_agent_loop_task(void *arg)
                         continue;
                     }
                 }
+                /* llm-retry (added): a transient upstream/transport failure on the
+                 * first LLM call (no tool has run yet) should not kill the turn;
+                 * retry once. Later rounds are not retried because tools may have
+                 * already produced side effects. */
+                if (!llm_retry_used && iteration == 0 && !core->stop_requested) {
+                    llm_retry_used = true;
+                    ESP_LOGW(TAG, "request=%" PRIu32 " retrying first LLM call after failure: %s",
+                             request.view.request_id,
+                             response.view.error_message ? response.view.error_message : esp_err_to_name(err));
+                    free(response.view.error_message);
+                    response.view.error_message = NULL;
+                    continue;
+                }
                 goto finish_request;
             }
 
@@ -489,27 +504,12 @@ finish_request:
             ESP_LOGE(TAG, "request=%" PRIu32 " failed: %s",
                      request.view.request_id,
                      response.view.error_message ? response.view.error_message : esp_err_to_name(err));
-            if (core->persist_context &&
-                    request.view.session_id && request.view.session_id[0] &&
-                    request.view.user_text && request.view.user_text[0]) {
-                esp_err_t persist_err;
-                char *failure_trace = claw_core_build_context_failure_trace(response.view.error_message,
-                                                                            tool_summary);
-
-                if (!failure_trace) {
-                    ESP_LOGW(TAG, "persist_context_failure skipped for failed request=%" PRIu32 ": no memory",
-                             request.view.request_id);
-                } else {
-                    persist_err = claw_core_persist_context_final_if_configured(core,
-                                                                                &request.view,
-                                                                                NULL,
-                                                                                failure_trace);
-                    claw_core_log_context_persist_failure(&request.view,
-                                                          "persist_context_failure_note",
-                                                          persist_err);
-                    free(failure_trace);
-                }
-            }
+            /* failure-note writeback removed (added): a failed turn used to be
+             * persisted into the session as a synthetic assistant message, which
+             * permanently poisoned history (replayed on every later turn) and
+             * pushed raw upstream error text into context. The error still reaches
+             * the caller via the outbound response; the session tail stays the
+             * unanswered user message, so the next turn retries naturally. */
         }
         /* terminal-agent-notification (added): if the success path did not already
          * notify, fire observers for the failure/limit/empty outcome here. This

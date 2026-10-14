@@ -24,6 +24,14 @@ static const char *TAG = "display_hal";
 
 #define DISPLAY_HAL_FRAMEBUFFER_COUNT_MAX 2
 #define DISPLAY_HAL_PI                    3.14159265358979323846f
+/* Scratch budget for immediate-mode (no active framebuffer) submits. These
+   paths stream pixels straight to the panel, so the caller's HAL lock is held
+   for the whole transfer; batching several scanlines into one blocking blit
+   keeps that hold short. */
+#define DISPLAY_HAL_SUBMIT_BAND_BYTES     16384
+/* Fills at or below this size use a stack scratch instead of the heap, so the
+   per-pixel/per-scanline shape loops (circle, arc, line) do not malloc. */
+#define DISPLAY_HAL_SUBMIT_STACK_BYTES    64
 typedef struct {
     SemaphoreHandle_t lock;
     display_service_session_handle_t session;
@@ -75,6 +83,7 @@ display_hal_pixel_format_t display_hal_get_pixel_format(void)
 
 static void display_hal_clear_clip_locked(void);
 static bool display_hal_clip_rect_to_screen_locked(int *x, int *y, int *width, int *height);
+static int display_hal_submit_band_lines(size_t row_bytes, int height);
 
 static esp_err_t display_hal_checked_framebuffer_bytes(int width, int height,
                                                        size_t bytes_per_pixel,
@@ -705,33 +714,110 @@ static esp_err_t display_hal_submit_bitmap_locked(int x_start, int y_start,
                                                   const void *pixels,
                                                   int pending_framebuffer_index)
 {
-    const void *submit_pixels = pixels;
-    esp_err_t ret;
+    const size_t row_bytes = (size_t)(x_end - x_start) * s_state.bytes_per_pixel;
+    const bool need_swap = display_hal_pixels_need_swap(s_state.pixel_format, s_state.panel_if);
+    const int height = y_end - y_start;
+    /* Only SPI/IO panels need the split (their colour-done can be missed on a
+       large single transfer); RGB/DSI panels keep one blit as before. */
+    const int band = (s_state.panel_if == DISPLAY_HAL_PANEL_IF_IO)
+                         ? display_hal_submit_band_lines(row_bytes, height)
+                         : height;
 
-    if (display_hal_pixels_need_swap(s_state.pixel_format, s_state.panel_if)) {
-        size_t pixel_count = (size_t)(x_end - x_start) * (size_t)(y_end - y_start);
-        ESP_RETURN_ON_FALSE(s_state.submit_swap_buffer != NULL, ESP_ERR_INVALID_STATE, TAG, "submit swap buffer missing");
-        display_hal_bswap16_into(s_state.submit_swap_buffer, (const uint8_t *)pixels, pixel_count);
-        submit_pixels = s_state.submit_swap_buffer;
+    ESP_RETURN_ON_FALSE(height > 0 && row_bytes > 0, ESP_ERR_INVALID_ARG, TAG, "empty submit");
+    ESP_RETURN_ON_FALSE(s_state.session != NULL, ESP_ERR_INVALID_STATE, TAG, "display session missing");
+    if (need_swap) {
+        ESP_RETURN_ON_FALSE(s_state.submit_swap_buffer != NULL, ESP_ERR_INVALID_STATE, TAG,
+                            "submit swap buffer missing");
     }
 
-    ESP_RETURN_ON_FALSE(s_state.session != NULL, ESP_ERR_INVALID_STATE, TAG, "display session missing");
-    ret = display_service_session_raw_blit(s_state.session, &(display_service_raw_blit_t) {
-        .x_start = x_start,
-        .y_start = y_start,
-        .x_end = x_end,
-        .y_end = y_end,
-        .frame_buffer = submit_pixels,
-        .wait = true,
-    });
-    if (ret != ESP_OK) {
-        return ret;
+    /* A single panel transaction bigger than DISPLAY_HAL_SUBMIT_BAND_BYTES never
+       signals colour-done on this panel (the bridge then waits forever), so
+       split the region into bands instead of one large blit. */
+    for (int row = 0; row < height; row += band) {
+        const int rows = (height - row < band) ? (height - row) : band;
+        const uint8_t *band_pixels = (const uint8_t *)pixels + (size_t)row * row_bytes;
+        const void *submit_pixels = band_pixels;
+
+        if (need_swap) {
+            display_hal_bswap16_into(s_state.submit_swap_buffer, band_pixels,
+                                     (size_t)(x_end - x_start) * (size_t)rows);
+            submit_pixels = s_state.submit_swap_buffer;
+        }
+
+        esp_err_t ret = display_service_session_raw_blit(s_state.session, &(display_service_raw_blit_t) {
+            .x_start = x_start,
+            .y_start = y_start + row,
+            .x_end = x_end,
+            .y_end = y_start + row + rows,
+            .frame_buffer = submit_pixels,
+            .wait = true,
+        });
+        if (ret != ESP_OK) {
+            return ret;
+        }
     }
 
     if (pending_framebuffer_index >= 0) {
         s_state.visible_framebuffer_index = (uint8_t)pending_framebuffer_index;
     }
     return ESP_OK;
+}
+
+/* How many scanlines fit in the immediate-mode scratch budget for a given row
+   size. Always at least one so a single oversized row still makes progress. */
+static int display_hal_submit_band_lines(size_t row_bytes, int height)
+{
+    int band;
+
+    if (row_bytes == 0 || height <= 0) {
+        return 1;
+    }
+    band = (int)(DISPLAY_HAL_SUBMIT_BAND_BYTES / row_bytes);
+    if (band < 1) {
+        band = 1;
+    }
+    if (band > height) {
+        band = height;
+    }
+    return band;
+}
+
+/* Immediate mode (no active framebuffer): fill an opaque rect by building a
+   band of scanlines once and streaming one blocking blit per band, rather than
+   one blit per scanline. */
+static esp_err_t display_hal_submit_fill_locked(int x, int y, int width, int height,
+                                                display_color_t color)
+{
+    const size_t bpp = s_state.bytes_per_pixel;
+    const size_t row_bytes = (size_t)width * bpp;
+    const int band = display_hal_submit_band_lines(row_bytes, height);
+    const size_t band_bytes = row_bytes * (size_t)band;
+    uint8_t stack_buf[DISPLAY_HAL_SUBMIT_STACK_BYTES];
+    uint8_t *band_buf = stack_buf;
+    esp_err_t ret = ESP_OK;
+
+    if (band_bytes > sizeof(stack_buf)) {
+        band_buf = malloc(band_bytes);
+        ESP_RETURN_ON_FALSE(band_buf != NULL, ESP_ERR_NO_MEM, TAG, "band buffer alloc failed");
+    }
+    for (int row = 0; row < band; ++row) {
+        display_hal_fill_row(band_buf + (size_t)row * row_bytes, color, width, false);
+    }
+
+    for (int row = 0; row < height; row += band) {
+        int rows = (height - row < band) ? (height - row) : band;
+
+        ret = display_hal_submit_bitmap_locked(x, y + row, x + width, y + row + rows,
+                                              band_buf, -1);
+        if (ret != ESP_OK) {
+            break;
+        }
+    }
+
+    if (band_buf != stack_buf) {
+        free(band_buf);
+    }
+    return ret;
 }
 
 static const esp_painter_basic_font_t *display_hal_get_font(uint8_t font_size)
@@ -862,21 +948,9 @@ static esp_err_t display_hal_fill_rect_locked(int x, int y, int width, int heigh
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* No active framebuffer: build a single opaque scanline once and stream it
-       into the panel row by row via draw_bitmap. */
-    size_t line_bytes = (size_t)width * s_state.bytes_per_pixel;
-    uint8_t *line = malloc(line_bytes);
-    ESP_RETURN_ON_FALSE(line != NULL, ESP_ERR_NO_MEM, TAG, "line alloc failed");
-    display_hal_fill_row(line, color, width, false);
-    for (int row = 0; row < height; ++row) {
-        esp_err_t ret = display_hal_submit_bitmap_locked(x, y + row, x + width, y + row + 1, line, -1);
-        if (ret != ESP_OK) {
-            free(line);
-            return ret;
-        }
-    }
-    free(line);
-    return ESP_OK;
+    /* No active framebuffer: stream the rect to the panel in bands (one
+       blocking blit per band) instead of one blit per scanline. */
+    return display_hal_submit_fill_locked(x, y, width, height, color);
 }
 
 static esp_err_t display_hal_draw_pixel_locked(int x, int y, display_color_t color)
@@ -1097,36 +1171,45 @@ static esp_err_t display_hal_draw_bitmap_crop_locked(int x, int y,
         return ESP_OK;
     }
 
-    if (src_format == DISPLAY_HAL_PIXEL_FORMAT_RGB888 && !src_native) {
-        size_t row_bytes = (size_t)w * src_bpp;
-        uint8_t *row_buf = malloc(row_bytes);
-        ESP_RETURN_ON_FALSE(row_buf != NULL, ESP_ERR_NO_MEM, TAG, "native row order buffer alloc failed");
-        for (int row = 0; row < h; ++row) {
-            const uint8_t *row_ptr = display_hal_src_pixel_ptr(src_bytes, src_width, src_x, src_y + row, src_bpp);
-            display_hal_copy_rgb888_to_native(row_buf, row_ptr, (size_t)w);
-            esp_err_t ret = display_hal_submit_bitmap_locked(x, y + row, x + w, y + row + 1, row_buf, -1);
-            if (ret != ESP_OK) {
-                free(row_buf);
-                return ret;
-            }
-        }
-        free(row_buf);
-        return ESP_OK;
-    }
+    /* Contiguous full-width rows already in panel order can be submitted in
+       place; anything else is restaged band-by-band below. */
+    const bool convert_native = (src_format == DISPLAY_HAL_PIXEL_FORMAT_RGB888 && !src_native);
 
-    if (src_x == 0 && w == src_width) {
+    if (!convert_native && src_x == 0 && w == src_width) {
         const uint8_t *start = display_hal_src_pixel_ptr(src_bytes, src_width, 0, src_y, src_bpp);
         return display_hal_submit_bitmap_locked(x, y, x + w, y + h, start, -1);
     }
 
-    for (int row = 0; row < h; ++row) {
-        const uint8_t *row_ptr = display_hal_src_pixel_ptr(src_bytes, src_width,
-                                                           src_x, src_y + row, src_bpp);
-        ESP_RETURN_ON_ERROR(
-            display_hal_submit_bitmap_locked(x, y + row, x + w, y + row + 1, row_ptr, -1),
-            TAG, "submit bitmap row failed");
+    /* Immediate mode: restage rows into bands (converting RGB888 to native
+       order when needed) and submit one blocking blit per band. */
+    const size_t row_bytes = (size_t)w * src_bpp;
+    const int band = display_hal_submit_band_lines(row_bytes, h);
+    uint8_t *band_buf = malloc(row_bytes * (size_t)band);
+    ESP_RETURN_ON_FALSE(band_buf != NULL, ESP_ERR_NO_MEM, TAG, "bitmap band buffer alloc failed");
+
+    esp_err_t ret = ESP_OK;
+    for (int row = 0; row < h; row += band) {
+        int rows = (h - row < band) ? (h - row) : band;
+
+        for (int r = 0; r < rows; ++r) {
+            const uint8_t *src = display_hal_src_pixel_ptr(src_bytes, src_width,
+                                                           src_x, src_y + row + r, src_bpp);
+            uint8_t *dst = band_buf + (size_t)r * row_bytes;
+
+            if (convert_native) {
+                display_hal_copy_rgb888_to_native(dst, src, (size_t)w);
+            } else {
+                memcpy(dst, src, row_bytes);
+            }
+        }
+        ret = display_hal_submit_bitmap_locked(x, y + row, x + w, y + row + rows, band_buf, -1);
+        if (ret != ESP_OK) {
+            break;
+        }
     }
-    return ESP_OK;
+
+    free(band_buf);
+    return ret;
 }
 
 static esp_err_t display_hal_draw_bitmap_locked(int x, int y, int w, int h,
@@ -1182,33 +1265,39 @@ static esp_err_t display_hal_pack_and_submit_locked(int x, int y, int w, int h,
     }
 
     if (s_state.submit_swap_buffer != NULL) {
-        size_t total_bytes = row_bytes * (size_t)h;
-        size_t buffer_bytes = s_state.submit_swap_buffer_pixels * bpp;
-        if (total_bytes <= buffer_bytes) {
+        const int band = (s_state.panel_if == DISPLAY_HAL_PANEL_IF_IO)
+                             ? display_hal_submit_band_lines(row_bytes, h)
+                             : h;
+
+        /* Stage and submit one band at a time: a single oversized blit never
+           signals colour-done (see display_hal_submit_bitmap_locked). Bypasses
+           submit_bitmap_locked so the pixels are not swapped twice. */
+        for (int row = 0; row < h; row += band) {
+            const int rows = (h - row < band) ? (h - row) : band;
             uint8_t *dst = s_state.submit_swap_buffer;
-            if (need_swap) {
-                for (int row = 0; row < h; ++row) {
-                    const uint8_t *src = fb + (size_t)(y + row) * src_stride + (size_t)x * bpp;
-                    display_hal_bswap16_into(dst + (size_t)row * row_bytes, src, (size_t)w);
-                }
-            } else {
-                for (int row = 0; row < h; ++row) {
-                    const uint8_t *src = fb + (size_t)(y + row) * src_stride + (size_t)x * bpp;
-                    memcpy(dst + (size_t)row * row_bytes, src, row_bytes);
+
+            for (int r = 0; r < rows; ++r) {
+                const uint8_t *src = fb + (size_t)(y + row + r) * src_stride + (size_t)x * bpp;
+
+                if (need_swap) {
+                    display_hal_bswap16_into(dst + (size_t)r * row_bytes, src, (size_t)w);
+                } else {
+                    memcpy(dst + (size_t)r * row_bytes, src, row_bytes);
                 }
             }
-            /* Bypass submit_bitmap_locked so we don't double-swap. */
             ESP_RETURN_ON_FALSE(s_state.session != NULL, ESP_ERR_INVALID_STATE, TAG,
                                 "display session missing");
-            return display_service_session_raw_blit(s_state.session, &(display_service_raw_blit_t) {
+            ESP_RETURN_ON_ERROR(display_service_session_raw_blit(s_state.session,
+                                                                 &(display_service_raw_blit_t) {
                 .x_start = x,
-                .y_start = y,
+                .y_start = y + row,
                 .x_end = x + w,
-                .y_end = y + h,
+                .y_end = y + row + rows,
                 .frame_buffer = dst,
                 .wait = true,
-            });
+            }), TAG, "present band failed");
         }
+        return ESP_OK;
     }
 
     /* Fallback: row-by-row submit. */
@@ -2395,7 +2484,19 @@ static esp_err_t display_hal_draw_text_bitmap_locked(int x, int y, const char *t
         }
     }
 
-    while (*text) {
+    /* Immediate mode: glyphs are submitted as runs of lit pixels (so a
+       transparent background is preserved) sourced from a colour-filled row.
+       This is far cheaper than one blocking blit per pixel. */
+    uint8_t *run_src = NULL;
+    if (!direct) {
+        run_src = malloc((size_t)font->width * s_state.bytes_per_pixel);
+        if (run_src != NULL) {
+            display_hal_fill_row(run_src, text_color, font->width, false);
+        }
+    }
+
+    esp_err_t ret = ESP_OK;
+    while (*text && ret == ESP_OK) {
         unsigned char ch = (unsigned char)*text++;
         if (ch == '\n') {
             cursor_x = x;
@@ -2412,7 +2513,8 @@ static esp_err_t display_hal_draw_text_bitmap_locked(int x, int y, const char *t
         }
         if (ch < 32 || ch > 126) {
             ESP_LOGE(TAG, "unsupported text character: 0x%02x", ch);
-            return ESP_ERR_INVALID_ARG;
+            ret = ESP_ERR_INVALID_ARG;
+            break;
         }
 
         const uint8_t *bitmap = font->bitmap + ((size_t)(ch - 32) * font->height * bytes_per_row);
@@ -2428,17 +2530,46 @@ static esp_err_t display_hal_draw_text_bitmap_locked(int x, int y, const char *t
                                                      clip_left, clip_top,
                                                      clip_right, clip_bottom);
             }
+        } else if (run_src != NULL) {
+            for (int dy = 0; dy < font->height && ret == ESP_OK; ++dy) {
+                const uint8_t *bits_row = bitmap + (size_t)dy * bytes_per_row;
+                int dx = 0;
+
+                while (dx < font->width) {
+                    int run_x;
+                    int run_w;
+
+                    while (dx < font->width && (bits_row[dx >> 3] & (0x80U >> (dx & 7))) == 0) {
+                        ++dx;
+                    }
+                    run_x = cursor_x + dx;
+                    while (dx < font->width && (bits_row[dx >> 3] & (0x80U >> (dx & 7))) != 0) {
+                        ++dx;
+                    }
+                    run_w = cursor_x + dx - run_x;
+                    if (run_w <= 0) {
+                        continue;
+                    }
+                    int run_y = cursor_y + dy;
+                    int run_h = 1;
+                    if (display_hal_clip_rect_locked(&run_x, &run_y, &run_w, &run_h, NULL, NULL)) {
+                        /* run_src is uniform, so any run reads the same colour. */
+                        ret = display_hal_submit_bitmap_locked(run_x, run_y, run_x + run_w,
+                                                               run_y + run_h, run_src, -1);
+                    }
+                }
+            }
         } else {
-            /* Fallback: no active framebuffer, per-pixel fill_rect submit. */
-            for (int dy = 0; dy < font->height; ++dy) {
+            /* Allocation failed: last-resort per-pixel submit. */
+            for (int dy = 0; dy < font->height && ret == ESP_OK; ++dy) {
                 for (int dx = 0; dx < font->width; ++dx) {
                     uint8_t bits = bitmap[(size_t)dy * bytes_per_row + dx / 8];
                     if ((bits & (0x80U >> (dx & 7))) == 0) {
                         continue;
                     }
-                    esp_err_t ret = display_hal_draw_pixel_locked(cursor_x + dx, cursor_y + dy, text_color);
+                    ret = display_hal_draw_pixel_locked(cursor_x + dx, cursor_y + dy, text_color);
                     if (ret != ESP_OK) {
-                        return ret;
+                        break;
                     }
                 }
             }
@@ -2446,8 +2577,10 @@ static esp_err_t display_hal_draw_text_bitmap_locked(int x, int y, const char *t
         cursor_x += font->width;
     }
 
+    free(run_src);
+
     /* Direct-path dirty union: whole text bbox in one shot. */
-    if (direct && text_w > 0 && text_h > 0) {
+    if (ret == ESP_OK && direct && text_w > 0 && text_h > 0) {
         int dx = x;
         int dy = y;
         int dw = text_w;
@@ -2456,7 +2589,7 @@ static esp_err_t display_hal_draw_text_bitmap_locked(int x, int y, const char *t
             display_dirty_mark(&s_state.dirty, dx, dy, dw, dh);
         }
     }
-    return ESP_OK;
+    return ret;
 }
 
 /* Draw text with pre-computed metrics. Requires HAL lock held. Alpha

@@ -26,6 +26,10 @@ static const char *TAG = "lua_display";
 
 static display_service_session_handle_t s_display_session;
 static bool s_display_active;
+/* The Lua state that currently owns the raw display session. The module keeps
+   process-global state, so without this a second concurrent script would
+   silently share (and later tear down) the first script's session. */
+static lua_State *s_display_owner;
 
 static int lua_display_check_integer_arg(lua_State *L, int index, const char *name)
 {
@@ -185,9 +189,11 @@ static void lua_display_exit_cleanup(lua_State *L)
 {
     esp_err_t err;
 
-    (void)L;
-
     if (!s_display_active) {
+        return;
+    }
+    if (s_display_owner != NULL && s_display_owner != L) {
+        /* Another script owns the session; it releases it on its own exit. */
         return;
     }
     ESP_LOGI(TAG, "Lua exit cleanup: display raw session still active, releasing");
@@ -201,6 +207,7 @@ static void lua_display_exit_cleanup(lua_State *L)
         s_display_session = NULL;
     }
     s_display_active = false;
+    s_display_owner = NULL;
 }
 
 static int lua_display_init(lua_State *L)
@@ -216,8 +223,13 @@ static int lua_display_init(lua_State *L)
     display_hal_pixel_format_t pixel_format = lua_display_parse_pixel_format(L, 6);
 
     if (s_display_active) {
-        lua_pushboolean(L, 1);
-        return 1;
+        if (s_display_owner == L) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+        /* The raw session is exclusive: a second concurrent script must not
+           share it, otherwise the two race on the display locks. */
+        return luaL_error(L, "display is already in use by another Lua script");
     }
 
     esp_err_t err = display_service_open(&(display_service_session_config_t) {
@@ -236,6 +248,7 @@ static int lua_display_init(lua_State *L)
         return luaL_error(L, "display init failed: %s", esp_err_to_name(err));
     }
     s_display_active = true;
+    s_display_owner = L;
 
     lua_pushboolean(L, 1);
     return 1;
@@ -243,11 +256,12 @@ static int lua_display_init(lua_State *L)
 
 static int lua_display_deinit(lua_State *L)
 {
-    (void)L;
-
     if (!s_display_active) {
         lua_pushboolean(L, 1);
         return 1;
+    }
+    if (s_display_owner != NULL && s_display_owner != L) {
+        return luaL_error(L, "display is owned by another Lua script");
     }
 
     esp_err_t err = display_hal_destroy();
@@ -263,6 +277,7 @@ static int lua_display_deinit(lua_State *L)
         s_display_session = NULL;
     }
     s_display_active = false;
+    s_display_owner = NULL;
 
     lua_pushboolean(L, 1);
     return 1;

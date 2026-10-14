@@ -1,4 +1,7 @@
 board: esp32_S3_test_board
 chip: esp32s3
-description: "ESP32-S3-DevKitC-1 with custom devices"
+# NOTE: this description is written verbatim into a C string literal by bmgr with
+# no escaping. Keep it a SINGLE-quoted YAML scalar, use \n (not real newlines) for
+# line breaks, and never include a double quote.
+description: 'ESP32-S3 self-assembled test board (kayzh): ESP32-S3, 16MB flash, 8MB octal PSRAM.\nI2C bus: SDA=GPIO1, SCL=GPIO2. Do NOT blind-scan this bus (lua i2c bus:scan): it probes addresses 1..126 while holding the bus mutex and can stall the sensors; use the known addresses below.\nI2C devices: 0x13 BMM150 (3-axis magnetometer); 0x62 SCD41 (CO2, temperature, humidity); 0x68 BMI270 (6-axis IMU).\nDisplay: ILI9341 320x240 SPI (CS=GPIO10, DC=GPIO8, RST=GPIO17, MOSI=GPIO11, SCK=GPIO12, MISO=GPIO13, backlight=GPIO16 PWM). Device name display_lcd; get params via board_manager.get_display_lcd_params.\nTouch: XPT2046 (TSC2046-compatible) resistive, shares the display SPI bus, CS=GPIO18, IRQ=GPIO5 (currently polled). Device name lcd_touch; its handle is an esp_lcd_touch_handle_t.\nSD card: SPI mode (CS=GPIO4, SCK=GPIO7, MOSI=GPIO6, MISO=GPIO5); with a card inserted the DATA root is /sdcard, otherwise the flash /fatfs.\nCamera: USB UVC (external USB camera).\nAudio: USB UAC speaker and microphone (external USB dongle); I2S PDM TX on GPIO15.'
 manufacturer: "kayzh"

@@ -12,8 +12,10 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 static const char *TAG = "claw_agent_mgr";
 
@@ -24,6 +26,20 @@ static const char *TAG = "claw_agent_mgr";
 #define CLAW_AGENT_MGR_MAX_BASE_PROVIDERS 7
 #define CLAW_AGENT_MGR_MAX_AGENTS        (1 + CONFIG_CLAW_AGENT_MGR_MAX_SUBAGENTS)
 #define CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE  768
+
+/* reliable-notify + liveness-reaper (added): a parent notification must not be
+ * dropped silently (the parent would then wait forever), and a subagent that
+ * wedges without reaching any terminal outcome must still be reported. */
+#define CLAW_AGENT_MGR_NOTIFY_ATTEMPTS          3
+#define CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS 1000
+#define CLAW_AGENT_MGR_NOTIFY_RETRY_DELAY_MS    200
+#define CLAW_AGENT_MGR_REAPER_PERIOD_MS         15000
+/* A working agent cycles phases (build -> llm -> tool -> ...) and a single LLM
+ * call may legitimately take up to ~120 s, so only an unchanged phase held for
+ * well over that marks a wedge. */
+#define CLAW_AGENT_MGR_REAPER_STUCK_MS          150000
+#define CLAW_AGENT_MGR_REAPER_TASK_STACK        4096
+#define CLAW_AGENT_MGR_REAPER_TASK_PRIO         4
 
 static const char *CLAW_AGENT_MGR_DEFAULT_ROOT_AGENT_SYSTEM_PROMPT =
     "You are the root agent. Own the user-facing conversation, decide whether work "
@@ -96,6 +112,12 @@ typedef struct {
     char parent_target_chat_id[96];
     bool background;
     bool closing;
+    /* reaper / reliable-notify state (added) */
+    bool stuck_reported;
+    claw_core_agent_loop_phase_t last_phase;
+    uint32_t phase_since_ms;
+    bool notify_pending;
+    char pending_notify_text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
     claw_core_handle_t core;
     claw_cap_core_call_user_ctx_t cap_user_ctx;
     uint32_t last_request_id;
@@ -128,6 +150,7 @@ static claw_agent_mgr_state_t s_mgr = {0};
 
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx);
+static void claw_agent_mgr_reaper_task(void *arg);
 static void claw_agent_mgr_fill_info_locked(const claw_agent_mgr_agent_t *agent,
                                             claw_agent_mgr_agent_info_t *out_info);
 
@@ -439,6 +462,16 @@ esp_err_t claw_agent_mgr_init(const claw_agent_mgr_config_t *config)
     s_mgr.next_instance_id = 0;
     s_mgr.next_request_id = 1;
     s_mgr.initialized = true;
+    /* liveness reaper (added): periodic sweep that reports subagents which stopped
+     * making progress without ever reaching a terminal outcome. */
+    if (xTaskCreate(claw_agent_mgr_reaper_task,
+                    "claw_agent_reap",
+                    CLAW_AGENT_MGR_REAPER_TASK_STACK,
+                    NULL,
+                    CLAW_AGENT_MGR_REAPER_TASK_PRIO,
+                    NULL) != pdPASS) {
+        ESP_LOGW(TAG, "failed to start liveness reaper task");
+    }
     return ESP_OK;
 
 fail:
@@ -704,6 +737,11 @@ static esp_err_t claw_agent_mgr_submit_to_agent(claw_agent_mgr_agent_t *agent,
         agent->last_request_id = request->request_id;
         agent->status = CLAW_AGENT_MGR_STATUS_RUNNING;
         agent->last_error[0] = '\0';
+        /* Fresh work: reset reaper liveness state so a revived agent can be
+         * reported stuck again if it wedges once more (added). */
+        agent->stuck_reported = false;
+        agent->last_phase = (claw_core_agent_loop_phase_t)0xFF;
+        agent->phase_since_ms = (uint32_t)(esp_timer_get_time() / 1000);
     } else {
         agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
         snprintf(agent->last_error, sizeof(agent->last_error), "%s", esp_err_to_name(err));
@@ -717,12 +755,85 @@ static esp_err_t claw_agent_mgr_submit_to_agent(claw_agent_mgr_agent_t *agent,
  * run emits <subagent_failed> and records last_error; hitting the round limit
  * emits <subagent_limit_reached>. In all cases the agent's status is updated so
  * inspect_agent reflects reality instead of a stuck "running". */
+/* Routing info for a parent notification, copied under the lock so delivery can
+ * happen outside it (with retries) without racing on the agent struct. */
+typedef struct {
+    char parent_session_id[CLAW_SESSION_MGR_ID_SIZE];
+    char parent_source_channel[16];
+    char parent_source_chat_id[96];
+    char parent_target_channel[16];
+    char parent_target_chat_id[96];
+} claw_agent_mgr_parent_route_t;
+
+static void claw_agent_mgr_capture_route_locked(const claw_agent_mgr_agent_t *agent,
+                                                claw_agent_mgr_parent_route_t *route,
+                                                uint32_t *out_request_id)
+{
+    strlcpy(route->parent_session_id, agent->parent_session_id, sizeof(route->parent_session_id));
+    strlcpy(route->parent_source_channel, agent->parent_source_channel, sizeof(route->parent_source_channel));
+    strlcpy(route->parent_source_chat_id, agent->parent_source_chat_id, sizeof(route->parent_source_chat_id));
+    strlcpy(route->parent_target_channel, agent->parent_target_channel, sizeof(route->parent_target_channel));
+    strlcpy(route->parent_target_chat_id, agent->parent_target_chat_id, sizeof(route->parent_target_chat_id));
+    if (out_request_id) {
+        *out_request_id = claw_agent_mgr_next_request_id_locked();
+    }
+}
+
+/* Deliver a notification to the root agent. Runs WITHOUT the manager lock so the
+ * retry backoff cannot block the manager, and retries so a temporarily full root
+ * queue does not silently lose the message (reliable-notify, added). Returns true
+ * when the message was accepted; false means the caller should retry later. */
+static bool claw_agent_mgr_deliver_to_parent(const claw_agent_mgr_parent_route_t *route,
+                                             uint32_t request_id,
+                                             const char *text)
+{
+    claw_agent_mgr_agent_t *root = NULL;
+    claw_core_handle_t root_core = NULL;
+    claw_core_request_t request = {0};
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+
+    claw_agent_mgr_lock();
+    root = claw_agent_mgr_find_locked(CLAW_AGENT_MGR_ROOT_AGENT_ID);
+    root_core = (root && root->core) ? root->core : NULL;
+    claw_agent_mgr_unlock();
+
+    if (!root_core || !route->parent_session_id[0]) {
+        ESP_LOGE(TAG, "cannot notify parent: no root core or no parent session");
+        return false;
+    }
+
+    request.request_id = request_id;
+    request.flags = CLAW_CORE_REQUEST_FLAG_PUBLISH_OUT_MESSAGE |
+                    CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE |
+                    CLAW_CORE_REQUEST_FLAG_USER_INTERRUPT;
+    request.session_id = route->parent_session_id;
+    request.user_text = text;
+    request.source_channel = route->parent_source_channel;
+    request.source_chat_id = route->parent_source_chat_id;
+    request.source_cap = "cap_agent_mgr";
+    request.target_channel = route->parent_target_channel;
+    request.target_chat_id = route->parent_target_chat_id;
+
+    for (int attempt = 0; attempt < CLAW_AGENT_MGR_NOTIFY_ATTEMPTS; attempt++) {
+        err = claw_core_submit(root_core, &request, CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS);
+        if (err == ESP_OK) {
+            return true;
+        }
+        ESP_LOGW(TAG, "notify parent attempt %d/%d failed: %s",
+                 attempt + 1, CLAW_AGENT_MGR_NOTIFY_ATTEMPTS, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(CLAW_AGENT_MGR_NOTIFY_RETRY_DELAY_MS));
+    }
+    ESP_LOGE(TAG, "FAILED to notify parent after %d attempts: %s",
+             CLAW_AGENT_MGR_NOTIFY_ATTEMPTS, esp_err_to_name(err));
+    return false;
+}
+
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx)
 {
     claw_agent_mgr_agent_t *agent = (claw_agent_mgr_agent_t *)user_ctx;
-    claw_agent_mgr_agent_t *root = NULL;
-    claw_core_request_t request = {0};
+    claw_agent_mgr_parent_route_t route;
+    uint32_t notify_request_id = 0;
     char text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
     static const char truncated_suffix[] = "\n[truncated]\n</subagent_completed>";
     bool failed = false;
@@ -798,6 +909,7 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
         return;
     }
     agent->last_request_id = summary->request_id;
+    agent->stuck_reported = false;
     if (failed) {
         agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
         snprintf(agent->last_error, sizeof(agent->last_error), "%s",
@@ -806,22 +918,108 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
         agent->status = CLAW_AGENT_MGR_STATUS_IDLE;
         agent->last_error[0] = '\0';
     }
-    root = claw_agent_mgr_find_locked(CLAW_AGENT_MGR_ROOT_AGENT_ID);
-    if (root && root->core) {
-        request.request_id = claw_agent_mgr_next_request_id_locked();
-        request.flags = CLAW_CORE_REQUEST_FLAG_PUBLISH_OUT_MESSAGE |
-                        CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE |
-                        CLAW_CORE_REQUEST_FLAG_USER_INTERRUPT;
-        request.session_id = agent->parent_session_id;
-        request.user_text = text;
-        request.source_channel = agent->parent_source_channel;
-        request.source_chat_id = agent->parent_source_chat_id;
-        request.source_cap = "cap_agent_mgr";
-        request.target_channel = agent->parent_target_channel;
-        request.target_chat_id = agent->parent_target_chat_id;
-        (void)claw_agent_mgr_submit_to_agent(root, &request, 1000);
-    }
+    claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
     claw_agent_mgr_unlock();
+
+    /* reliable-notify (added): deliver outside the lock, with retries. If it still
+     * fails, stash the text so the reaper retries instead of losing it silently. */
+    if (!claw_agent_mgr_deliver_to_parent(&route, notify_request_id, text)) {
+        claw_agent_mgr_lock();
+        if (!agent->closing) {
+            strlcpy(agent->pending_notify_text, text, sizeof(agent->pending_notify_text));
+            agent->notify_pending = true;
+        }
+        claw_agent_mgr_unlock();
+    }
+}
+
+/* Liveness reaper (added): the completion observer only fires when the agent loop
+ * reaches a terminal outcome. A subagent whose task crashes or wedges (a blocking
+ * tool, a wedged HTTP call, a stack fault) never reaches one, so its parent would
+ * wait forever. This sweep detects "running but the loop has been idle for a
+ * while" and reports it to the parent once, then marks the agent failed. */
+static void claw_agent_mgr_reap_stuck_once(void)
+{
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+    for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
+        claw_agent_mgr_parent_route_t route;
+        char text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
+        uint32_t notify_request_id = 0;
+        bool retry_pending = false;
+        bool do_notify = false;
+
+        claw_agent_mgr_lock();
+        {
+            claw_agent_mgr_agent_t *agent = &s_mgr.agents[i];
+            bool eligible = agent->occupied &&
+                            agent->role == CLAW_AGENT_MGR_ROLE_SUBAGENT &&
+                            !agent->closing;
+
+            /* 1) Re-deliver a notification whose earlier delivery failed. */
+            if (eligible && agent->notify_pending) {
+                strlcpy(text, agent->pending_notify_text, sizeof(text));
+                claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
+                retry_pending = true;
+            }
+
+            /* 2) Detect a wedge: the loop phase has not advanced for far longer
+             * than any legitimate single step (a slow LLM call is ~120 s). */
+            if (eligible && !retry_pending &&
+                    agent->status == CLAW_AGENT_MGR_STATUS_RUNNING && agent->core) {
+                claw_core_agent_loop_phase_t phase = claw_core_get_agent_loop_phase(agent->core);
+
+                if (phase != agent->last_phase) {
+                    agent->last_phase = phase;
+                    agent->phase_since_ms = now_ms;
+                } else if (!agent->stuck_reported &&
+                           (uint32_t)(now_ms - agent->phase_since_ms) > CLAW_AGENT_MGR_REAPER_STUCK_MS) {
+                    agent->stuck_reported = true;
+                    agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
+                    snprintf(agent->last_error, sizeof(agent->last_error),
+                             "no progress for ~%u s", (unsigned)(CLAW_AGENT_MGR_REAPER_STUCK_MS / 1000));
+                    snprintf(text, sizeof(text),
+                             "<subagent_stuck agent_id=\"%s\">No progress for ~%u s: the subagent is still "
+                             "marked running but its loop has not advanced, so it likely crashed or wedged. "
+                             "inspect_agent shows its last_error. Resume it with send_agent_followup, or "
+                             "close_agent to stop it and finish the work yourself.</subagent_stuck>",
+                             agent->agent_id, (unsigned)(CLAW_AGENT_MGR_REAPER_STUCK_MS / 1000));
+                    claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
+                    do_notify = true;
+                    ESP_LOGW(TAG, "reaper: subagent %s looks stuck; notifying parent", agent->agent_id);
+                }
+            }
+        }
+        claw_agent_mgr_unlock();
+
+        if (retry_pending || do_notify) {
+            bool delivered = claw_agent_mgr_deliver_to_parent(&route, notify_request_id, text);
+
+            claw_agent_mgr_lock();
+            {
+                claw_agent_mgr_agent_t *agent = &s_mgr.agents[i];
+
+                if (delivered && retry_pending) {
+                    agent->notify_pending = false;
+                    agent->pending_notify_text[0] = '\0';
+                } else if (!delivered && do_notify) {
+                    strlcpy(agent->pending_notify_text, text, sizeof(agent->pending_notify_text));
+                    agent->notify_pending = true;
+                }
+            }
+            claw_agent_mgr_unlock();
+        }
+    }
+}
+
+static void claw_agent_mgr_reaper_task(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(CLAW_AGENT_MGR_REAPER_PERIOD_MS));
+        claw_agent_mgr_reap_stuck_once();
+    }
 }
 
 esp_err_t claw_agent_mgr_submit_root(const claw_agent_mgr_root_input_t *input,

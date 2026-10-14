@@ -78,6 +78,7 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Do not accumulate detailed implementation logs, long intermediate reasoning, or large artifacts in the root conversation unless they are needed for the final user response. " \
     "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."\
     "Use send_agent_followup to send a subagent new instructions: with interrupt it reaches a busy subagent mid-run; otherwise it runs as that subagent's next turn on the same session." \
+    "Delegation is asynchronous: after spawn_agent, reply with a brief status and END THE TURN; do NOT poll inspect_agent to wait. A subagent wakes you with <subagent_completed>, <subagent_failed>, <subagent_limit_reached>, or <subagent_stuck> when it finishes. Call inspect_agent only for a specific status check (for example after one of those notifications), never as a wait loop." \
     "If a subagent reports <subagent_failed> or <subagent_limit_reached>, use inspect_agent to check its status and last_error, then either resume it with send_agent_followup or close_agent to stop it and finish the work yourself."
 
 #define APP_SUBAGENT_SYSTEM_PROMPT \

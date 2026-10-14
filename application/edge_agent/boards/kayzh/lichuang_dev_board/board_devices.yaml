@@ -47,7 +47,7 @@ devices:
       io_spi_config:
         cs_gpio_num: -1              # CS 由定制驱动里的 PCA9557 完成 reset 期间的 CS 转换
         dc_gpio_num: 39              # 实战派 IO39 DC ✅
-        spi_mode: 2
+        spi_mode: 0
         pclk_hz: 80000000            # 原厂使用 80 MHz
         trans_queue_depth: 10         # 原厂使用深度 10
         lcd_cmd_bits: 8
@@ -68,35 +68,78 @@ devices:
     peripherals:
       - name: ledc_backlight
 
-  # - name: fs_fat_sdcard
-  #   version: 1.0.0
-  #   type: fs_fat
-  #   sub_type: sdmmc
-  #   config:
-  #     mount_point: /sdcard
-  #     vfs_config:
-  #       format_if_mount_failed: false
-  #       max_files: 5
-  #       allocation_unit_size: 16384
-  #     sub_config:
-  #       slot: SDMMC_HOST_SLOT_1
-  #       frequency: SDMMC_FREQ_HIGHSPEED
-  #       bus_width: 1
-  #       slot_flags: SDMMC_SLOT_FLAG_INTERNAL_PULLUP
-  #       pins:
-  #         clk: 47
-  #         cmd: 48
-  #         d0: 21
-  #         d1: -1
-  #         d2: -1
-  #         d3: -1
-  #         d4: -1
-  #         d5: -1
-  #         d6: -1
-  #         d7: -1
-  #         cd: -1
-  #         wp: -1
-  #   peripherals: []
+  - name: lcd_touch
+    chip: ft5x06
+    type: lcd_touch
+    sub_type: i2c
+    version: default
+    depends_on: display_lcd
+    dependencies:
+      esp_lcd_touch:
+        version: "*"
+        require: public
+      espressif/esp_lcd_touch_ft5x06: "^1.0.0"
+    config:
+      io_i2c_config:
+        lcd_cmd_bits: 8
+        scl_speed_hz: 400000
+      touch_config:
+        x_max: 320
+        y_max: 240
+        rst_gpio_num: -1
+        int_gpio_num: -1
+        flags:
+          swap_xy: true
+          mirror_x: true
+          mirror_y: false
+    peripherals:
+      - name: i2c_master
+        i2c_addr: [0x70]
+
+  - name: fs_sdcard
+    version: default
+    type: fs_fat
+    sub_type: sdmmc
+    config:
+      mount_point: /sdcard
+      vfs_config:
+        format_if_mount_failed: false
+        max_files: 5
+        allocation_unit_size: 16384
+      sub_config:
+        slot: SDMMC_HOST_SLOT_1
+        frequency: SDMMC_FREQ_HIGHSPEED
+        bus_width: 1
+        slot_flags: SDMMC_SLOT_FLAG_INTERNAL_PULLUP
+        pins:
+          clk: 47
+          cmd: 48
+          d0: 21
+          d1: -1
+          d2: -1
+          d3: -1
+          d4: -1
+          d5: -1
+          d6: -1
+          d7: -1
+          cd: -1
+          wp: -1
+    peripherals: []
+
+  # Onboard QMI8658A 6-axis IMU (I2C 0x6a), read through the lua_module_imu
+  # QMI8658 backend: local imu = require("imu"); imu.new("imu_sensor").
+  - name: imu_sensor
+    chip: qmi8658
+    type: custom
+    version: 1.0.0
+    init_skip: true
+    config:
+      i2c_addr: 0x6a
+      frequency: 400000
+      int_gpio_num: -1
+      sdo_gpio_num: -1
+    peripherals:
+      - name: i2c_master
 
   - name: audio_dac
     chip: es8311
@@ -140,73 +183,40 @@ devices:
 
 
 
-  # - name: lcd_touch_ft6x36
-  #   version: 1.0.0
-  #   chip: ft6x36
-  #   type: lcd_touch
-  #   sub_type: i2c
-  #   depends_on: display_lcd
-  #   config:
-  #     io_i2c_config:
-  #       control_phase_bytes: 1
-  #       dc_bit_offset: 0
-  #       lcd_cmd_bits: 8
-  #       lcd_param_bits: 8
-  #       scl_speed_hz: 400000
-  #       flags:
-  #         dc_low_on_data: false
-  #         disable_control_phase: true
-  #     touch_config:
-  #       x_max: 320
-  #       y_max: 240
-  #       rst_gpio_num: -1
-  #       int_gpio_num: -1
-  #       levels:
-  #         reset: 0
-  #         interrupt: 0
-  #       flags:
-  #         swap_xy: true
-  #         mirror_x: true
-  #         mirror_y: false
-  #   peripherals:
-  #     - name: i2c_master
-  #       i2c_addr: 0x70
-
-  # - name: camera_dvp
-  #   version: 1.0.0
-  #   type: camera
-  #   sub_type: dvp
-  #   config:
-  #     dvp_config:
-  #       reset_io: -1
-  #       pwdn_io: -1
-  #       vsync_io: 3
-  #       data_width: CAM_CTLR_DATA_WIDTH_8
-  #       de_io: -1
-  #       pclk_io: 7
-  #       xclk_io: -1
-  #       xclk_freq: 20000000
-  #       data_io:
-  #         data_io_0: 16
-  #         data_io_1: 18
-  #         data_io_2: 8
-  #         data_io_3: 17
-  #         data_io_4: 15
-  #         data_io_5: 6
-  #         data_io_6: 4
-  #         data_io_7: 9
-  #         data_io_8: -1
-  #         data_io_9: -1
-  #         data_io_10: -1
-  #         data_io_11: -1
-  #         data_io_12: -1
-  #         data_io_13: -1
-  #         data_io_14: -1
-  #         data_io_15: -1
-  #   depends_on: gpio_expander_pca9557
-  #   peripherals:
-  #     - name: i2c_master
-  #       frequency: 100000
+  - name: camera
+    type: camera
+    sub_type: dvp
+    version: default
+    config:
+      dvp_config:
+        reset_io: -1
+        pwdn_io: -1            # camera PWDN sits on PCA9557 IO2, driven low in setup_device.c
+        vsync_io: 3
+        de_io: 46              # HREF
+        pclk_io: 7
+        xclk_io: 5
+        xclk_freq: 20000000    # GC0308 DVP formats require 20 MHz XCLK
+        data_width: CAM_CTLR_DATA_WIDTH_8
+        data_io:
+          data_io_0: 16
+          data_io_1: 18
+          data_io_2: 8
+          data_io_3: 17
+          data_io_4: 15
+          data_io_5: 6
+          data_io_6: 4
+          data_io_7: 9
+          data_io_8: -1
+          data_io_9: -1
+          data_io_10: -1
+          data_io_11: -1
+          data_io_12: -1
+          data_io_13: -1
+          data_io_14: -1
+          data_io_15: -1
+    peripherals:
+      - name: i2c_master
+        frequency: 100000
 
 
 

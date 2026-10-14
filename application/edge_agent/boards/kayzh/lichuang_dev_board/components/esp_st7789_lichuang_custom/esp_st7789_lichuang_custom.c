@@ -162,12 +162,15 @@ esp_err_t esp_io_expander_new_pca9557(i2c_master_bus_handle_t i2c_bus, uint32_t 
     ESP_GOTO_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &i2c_dev_cfg, &pca9557->i2c_handle), err, TAG, "Add new I2C device failed");
 
     /* PCA9557 semantics differ from chips like the AW9523B:
-     *   - direction register bit 1 = input, 0 = output (dir_out_bit_zero = 0)
+     *   - direction register bit 1 = input, 0 = output
+     *     => a direction bit of 0 selects output, so dir_out_bit_zero must be 1.
+     *        With 0 the framework writes bit=1 for OUTPUT and the pin stays an
+     *        input, leaving LCD_CS / PA_EN floating.
      *   - input register bit 1 = high level             (input_high_bit_zero = 0)
      * The hardware has no pull-up/down or high-Z registers, so those optional
      * function pointers stay NULL and the board manager skips them. */
     pca9557->base.config.io_count = PCA9557_IO_COUNT;
-    pca9557->base.config.flags.dir_out_bit_zero = 0;
+    pca9557->base.config.flags.dir_out_bit_zero = 1;
     pca9557->base.config.flags.input_high_bit_zero = 0;
     pca9557->base.read_input_reg = read_input_reg;
     pca9557->base.write_output_reg = write_output_reg;

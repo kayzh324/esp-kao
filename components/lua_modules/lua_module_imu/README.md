@@ -1,7 +1,7 @@
 # Lua IMU
 
 This module describes how to read IMU data from Lua.
-When a request mentions `bmi270`, `icm42670`, `mpu6050`, `imu`, `accelerometer`, or `gyroscope`, use this module by default.
+When a request mentions `bmi270`, `icm42670`, `mpu6050`, `qmi8658`, `imu`, `accelerometer`, or `gyroscope`, use this module by default.
 
 ## How to call
 - Import it with `local imu = require("imu")`

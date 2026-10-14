@@ -712,6 +712,11 @@ static esp_err_t claw_agent_mgr_submit_to_agent(claw_agent_mgr_agent_t *agent,
     return err;
 }
 
+/* terminal-agent-notification (added): the observer now fires for every terminal
+ * outcome. Success keeps the original <subagent_completed> envelope; a failed
+ * run emits <subagent_failed> and records last_error; hitting the round limit
+ * emits <subagent_limit_reached>. In all cases the agent's status is updated so
+ * inspect_agent reflects reality instead of a stuck "running". */
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx)
 {
@@ -720,18 +725,57 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
     claw_core_request_t request = {0};
     char text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
     static const char truncated_suffix[] = "\n[truncated]\n</subagent_completed>";
+    bool failed = false;
     int written;
 
     if (!summary || !agent || !agent->parent_session_id[0]) {
         return;
     }
 
-    written = snprintf(text,
-                       sizeof(text),
-                       "<subagent_completed agent_id=\"%s\" request_id=\"%" PRIu32 "\">\n%s\n</subagent_completed>",
-                       agent->agent_id,
-                       summary->request_id,
-                       summary->final_text ? summary->final_text : "");
+    switch (summary->completion_type) {
+    case CLAW_CORE_COMPLETION_LIMIT_REACHED:
+        written = snprintf(text,
+                           sizeof(text),
+                           "<subagent_limit_reached agent_id=\"%s\" request_id=\"%" PRIu32 "\">"
+                           "The subagent reached its tool-call round limit; its partial work is retained "
+                           "in its session. Send it 'Keep going and report ASAP.' via send_agent_followup to "
+                           "continue, or close_agent to stop it.</subagent_limit_reached>",
+                           agent->agent_id,
+                           summary->request_id);
+        break;
+    case CLAW_CORE_COMPLETION_FAILED: {
+        char safe_error[96];
+        const char *src = (summary->error_message && summary->error_message[0]) ?
+                          summary->error_message : "unknown error";
+        size_t i = 0;
+
+        /* Keep attribute quoting valid: collapse quotes/control chars. */
+        for (; src[i] && i + 1 < sizeof(safe_error); i++) {
+            char c = src[i];
+            safe_error[i] = (c == '"' || c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+        }
+        safe_error[i] = '\0';
+        failed = true;
+        written = snprintf(text,
+                           sizeof(text),
+                           "<subagent_failed agent_id=\"%s\" request_id=\"%" PRIu32 "\" error=\"%s\">"
+                           "The subagent stopped on an error. inspect_agent reports its last_error. "
+                           "Retry it via send_agent_followup, or close_agent to stop it.</subagent_failed>",
+                           agent->agent_id,
+                           summary->request_id,
+                           safe_error);
+        break;
+    }
+    case CLAW_CORE_COMPLETION_DONE:
+    default:
+        written = snprintf(text,
+                           sizeof(text),
+                           "<subagent_completed agent_id=\"%s\" request_id=\"%" PRIu32 "\">\n%s\n</subagent_completed>",
+                           agent->agent_id,
+                           summary->request_id,
+                           summary->final_text ? summary->final_text : "");
+        break;
+    }
     if (written < 0) {
         return;
     }
@@ -753,8 +797,15 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
         claw_agent_mgr_unlock();
         return;
     }
-    agent->status = CLAW_AGENT_MGR_STATUS_IDLE;
     agent->last_request_id = summary->request_id;
+    if (failed) {
+        agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
+        snprintf(agent->last_error, sizeof(agent->last_error), "%s",
+                 (summary->error_message && summary->error_message[0]) ? summary->error_message : "error");
+    } else {
+        agent->status = CLAW_AGENT_MGR_STATUS_IDLE;
+        agent->last_error[0] = '\0';
+    }
     root = claw_agent_mgr_find_locked(CLAW_AGENT_MGR_ROOT_AGENT_ID);
     if (root && root->core) {
         request.request_id = claw_agent_mgr_next_request_id_locked();

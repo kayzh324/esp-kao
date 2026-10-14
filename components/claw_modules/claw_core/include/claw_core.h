@@ -23,6 +23,8 @@ typedef enum {
 
 typedef enum {
     CLAW_CORE_COMPLETION_DONE = 0,
+    CLAW_CORE_COMPLETION_FAILED = 1,
+    CLAW_CORE_COMPLETION_LIMIT_REACHED = 2,
 } claw_core_completion_type_t;
 
 typedef enum {
@@ -177,6 +179,12 @@ typedef struct {
     const char *final_text;            /* may be NULL or empty */
     const char *context_providers_csv; /* providers that injected non-empty content */
     const char *tool_calls_csv;        /* tool calls invoked across all rounds */
+    /* terminal-agent-notification (added): observers now fire on every terminal
+     * outcome, not only success, so a parent agent always learns how a child
+     * ended. completion_type distinguishes normal completion from failure or
+     * hitting the tool-call round limit; error_message is set for failures. */
+    claw_core_completion_type_t completion_type;
+    const char *error_message;         /* may be NULL; set when completion_type != DONE */
 } claw_core_completion_summary_t;
 
 typedef void (*claw_core_completion_observer_fn)(const claw_core_completion_summary_t *summary,

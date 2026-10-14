@@ -117,6 +117,11 @@ void claw_core_agent_loop_task(void *arg)
         char obs_tool_calls_csv[CLAW_CORE_OBS_CSV_MAX] = {0};
         bool original_user_persisted = false;
         bool inject_active_user = true;
+        /* terminal-agent-notification (added): every terminal outcome must reach
+         * registered observers (subagent parents), including failures and the
+         * tool-call round limit, so a parent never sees a silently stuck child. */
+        claw_core_completion_type_t completion_outcome = CLAW_CORE_COMPLETION_FAILED;
+        bool completion_notified = false;
 
         if (xQueueReceive(core->request_queue, &request, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -416,7 +421,12 @@ void claw_core_agent_loop_task(void *arg)
 
             iteration++;
             if (iteration >= core->max_tool_iterations) {
-                response.view.error_message = claw_utils_string_dup("cap tool iteration limit reached");
+                /* terminal-agent-notification (added): report the round limit as a
+                 * distinct terminal outcome with an actionable message rather than
+                 * a generic failure, so the parent can follow up or close the agent. */
+                response.view.error_message = claw_utils_string_dup(
+                    "reached tool-call round limit; partial work is retained in this session");
+                completion_outcome = CLAW_CORE_COMPLETION_LIMIT_REACHED;
                 err = ESP_ERR_INVALID_STATE;
                 goto finish_request;
             }
@@ -440,12 +450,16 @@ void claw_core_agent_loop_task(void *arg)
                     .final_text = response.view.text,
                     .context_providers_csv = obs_providers_csv,
                     .tool_calls_csv = obs_tool_calls_csv,
+                    .completion_type = CLAW_CORE_COMPLETION_DONE,
+                    .error_message = NULL,
                 };
                 for (size_t i = 0; i < core->completion_observer_count; i++) {
                     core->completion_observers[i].fn(&summary,
                                                      core->completion_observers[i].user_ctx);
                 }
             }
+            completion_outcome = CLAW_CORE_COMPLETION_DONE;
+            completion_notified = true;
         } else if (!response.view.error_message) {
             response.view.error_message = claw_utils_string_dup(esp_err_to_name(err));
         }
@@ -468,6 +482,8 @@ finish_request:
                 response.view.error_message = claw_utils_string_dup("request cancelled");
             }
         }
+
+        response.view.completion_type = completion_outcome;
 
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "request=%" PRIu32 " failed: %s",
@@ -495,6 +511,25 @@ finish_request:
                 }
             }
         }
+        /* terminal-agent-notification (added): if the success path did not already
+         * notify, fire observers for the failure/limit/empty outcome here. This
+         * covers every early `goto finish_request` exit as well as loop failures. */
+        if (!completion_notified && core->completion_observer_count > 0) {
+            claw_core_completion_summary_t summary = {
+                .request_id = request.view.request_id,
+                .session_id = request.view.session_id,
+                .final_text = response.view.text,
+                .context_providers_csv = obs_providers_csv,
+                .tool_calls_csv = obs_tool_calls_csv,
+                .completion_type = completion_outcome,
+                .error_message = response.view.error_message,
+            };
+            for (size_t i = 0; i < core->completion_observer_count; i++) {
+                core->completion_observers[i].fn(&summary,
+                                                 core->completion_observers[i].user_ctx);
+            }
+        }
+
         claw_core_publish_out_message_if_requested(&request, &response);
         if (request.view.flags & CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE) {
             claw_core_free_response_item(&response);

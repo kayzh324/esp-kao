@@ -20,6 +20,24 @@ static const char *TAG = "cap_agent_mgr";
 // max number of agents
 #define CAP_AGENT_MGR_LIST_MAX 16
 
+/* terminal-agent-notification (added): expose the agent loop phase as a readable
+ * name so the root model can tell whether a "running" child is actually working
+ * (in_llm_http / running_tool) or idle, instead of an opaque integer. */
+static const char *cap_agent_mgr_phase_to_string(claw_core_agent_loop_phase_t phase)
+{
+    switch (phase) {
+    case CLAW_CORE_AGENT_LOOP_PHASE_IDLE: return "idle";
+    case CLAW_CORE_AGENT_LOOP_PHASE_BEFORE_BUILD_ITERATION_CONTEXT: return "before_build_context";
+    case CLAW_CORE_AGENT_LOOP_PHASE_BUILDING_ITERATION_CONTEXT: return "building_context";
+    case CLAW_CORE_AGENT_LOOP_PHASE_BEFORE_LLM_HTTP: return "before_llm_http";
+    case CLAW_CORE_AGENT_LOOP_PHASE_IN_LLM_HTTP: return "in_llm_http";
+    case CLAW_CORE_AGENT_LOOP_PHASE_AFTER_LLM_BEFORE_TOOL: return "after_llm_before_tool";
+    case CLAW_CORE_AGENT_LOOP_PHASE_RUNNING_TOOL: return "running_tool";
+    case CLAW_CORE_AGENT_LOOP_PHASE_FINALIZING: return "finalizing";
+    default: return "unknown";
+    }
+}
+
 static const char *cap_agent_mgr_get_string(cJSON *root, const char *name)
 {
     return cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root, name));
@@ -177,10 +195,10 @@ static esp_err_t cap_agent_mgr_inspect_execute(const char *input_json,
 
     snprintf(output,
              output_size,
-             "{\"agent_id\":\"%s\",\"status\":\"%s\",\"phase\":%d,\"last_request_id\":%" PRIu32 ",\"agent_type\":\"%s\",\"last_error\":\"%s\"}",
+             "{\"agent_id\":\"%s\",\"status\":\"%s\",\"phase\":\"%s\",\"last_request_id\":%" PRIu32 ",\"agent_type\":\"%s\",\"last_error\":\"%s\"}",
              info.agent_id,
              claw_agent_mgr_status_to_string(info.status),
-             (int)info.phase,
+             cap_agent_mgr_phase_to_string(info.phase),
              info.last_request_id,
              info.agent_type,
              info.last_error);
@@ -236,7 +254,7 @@ static esp_err_t cap_agent_mgr_list_execute(const char *input_json,
         cJSON_AddStringToObject(item, "agent_id", infos[i].agent_id);
         cJSON_AddStringToObject(item, "status", claw_agent_mgr_status_to_string(infos[i].status));
         cJSON_AddStringToObject(item, "agent_type", infos[i].agent_type);
-        cJSON_AddNumberToObject(item, "phase", (double)infos[i].phase);
+        cJSON_AddStringToObject(item, "phase", cap_agent_mgr_phase_to_string(infos[i].phase));
         cJSON_AddNumberToObject(item, "last_request_id", (double)infos[i].last_request_id);
         if (infos[i].last_error[0]) {
             cJSON_AddStringToObject(item, "last_error", infos[i].last_error);

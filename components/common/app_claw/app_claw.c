@@ -65,6 +65,8 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Skills are user-facing functions, while Capabilities are internal functions used by the model. " \
     "When communicating with the user, refer to skills instead of Capabilities. " \
     "Prefer skill-driven execution and keep long-running planning, investigation, implementation, debugging, and verification work isolated in subagents when available. " \
+    "To change an existing file, use edit_file with small exact old_text/new_text replacements; use write_file only to create a new file or fully rewrite one. " \
+    "read_file returns numbered lines and supports offset/limit, so read only the needed window of a large file instead of the whole file. " \
     "Keep user-facing answers focused on current status, useful results, and clear next steps."\
     "You have at most 30 rounds per turn; MUST plan and finish decisively within that budget."
 
@@ -75,7 +77,8 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Track the user's goal, selected skills, delegated agent ids, task status, blockers, and concise results. " \
     "Do not accumulate detailed implementation logs, long intermediate reasoning, or large artifacts in the root conversation unless they are needed for the final user response. " \
     "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."\
-    "Send 'Keep going and report ASAP.' to a running sub agent via 'send_agent_followup' Callable method before 'inspect_agent' can boost sub agent's working."
+    "Use send_agent_followup to send a subagent new instructions: with interrupt it reaches a busy subagent mid-run; otherwise it runs as that subagent's next turn on the same session." \
+    "If a subagent reports <subagent_failed> or <subagent_limit_reached>, use inspect_agent to check its status and last_error, then either resume it with send_agent_followup or close_agent to stop it and finish the work yourself."
 
 #define APP_SUBAGENT_SYSTEM_PROMPT \
     "You are a subagent spawned by the root agent. Handle long-running, scoped work delegated by the root agent. " \

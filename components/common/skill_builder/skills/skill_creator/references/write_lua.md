@@ -11,17 +11,19 @@ Rules:
 - Do not expose a Lua file without a matching skill that describes the user intent, prerequisites, arguments, and reporting behavior.
 - Do not write absolute paths, paths with `..`, backslash paths, or non-`.lua` files.
 - Reuse one skill-local script path during iteration instead of creating `foo2.lua`, `foo3.lua`, and similar variants.
+- To change an existing script, use `edit_file` with targeted `old_text`/`new_text` replacements; reserve `write_file` for creating a new script or a full rewrite.
 
 ## Reference Read Strategy
 
 For Lua authoring, debugging, or hardware control, gather likely needed references before writing code.
 Prefer several consecutive `read_file` tool calls in the same step instead of reading one document, reasoning, then coming back for another.
+`read_file` returns numbered lines and supports `offset`/`limit`, so for a large file read the window you need (and page with `offset`) instead of the whole file.
 
 - Always read `/system/scripts/builtin/lib/arg_schema.md` and  `/system/scripts/builtin/lib/lua_module_delay.md` when script args are involved.
 - Read every Lua module doc needed by the task before code generation.
 - Read the closest builtin test script source as the implementation pattern.
 - Activate `builtin_lua_modules` and use its table to find the needed doc path.
-- If output ends with `[read_file truncated: ...]`, treat it as incomplete and do not infer missing APIs.
+- If output ends with a `[read_file: showing lines ...]` notice, the file continues; call `read_file` again with the suggested `offset` and do not infer missing APIs.
 
 Builtin patterns:
 

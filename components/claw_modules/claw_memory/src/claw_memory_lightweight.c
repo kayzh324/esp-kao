@@ -41,5 +41,8 @@ static esp_err_t claw_memory_long_term_lightweight_collect(const claw_core_reque
 const claw_core_context_provider_t claw_memory_long_term_lightweight_provider = {
     .name = "Long-term Memory",
     .collect = claw_memory_long_term_lightweight_collect,
+    /* request-start snapshot (added): MEMORY.md is stable within a request, so
+     * collect once instead of re-reading it every tool round. */
+    .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
     .user_ctx = NULL,
 };

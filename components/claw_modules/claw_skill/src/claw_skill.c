@@ -1841,5 +1841,8 @@ static esp_err_t claw_skill_skills_list_collect(const claw_core_request_t *reque
 const claw_core_context_provider_t claw_skill_skills_list_provider = {
     .name = "Skills List",
     .collect = claw_skill_skills_list_collect,
+    /* request-start snapshot (added): the catalog of skill id+summary is stable
+     * within a request, so collect once instead of rebuilding it every round. */
+    .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
     .user_ctx = NULL,
 };

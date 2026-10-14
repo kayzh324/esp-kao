@@ -146,5 +146,9 @@ static esp_err_t claw_memory_profile_collect(const claw_core_request_t *request,
 const claw_core_context_provider_t claw_memory_profile_provider = {
     .name = "Editable Profile Memory",
     .collect = claw_memory_profile_collect,
+    /* request-start snapshot (added): the profile files are stable within a
+     * request, so collect once per request instead of re-reading them from disk
+     * on every tool round. Keeps the system-prompt prefix stable across rounds. */
+    .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
     .user_ctx = NULL,
 };

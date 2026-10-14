@@ -5,12 +5,20 @@
  */
 #include "claw_core_internal.h"
 
+#include <dirent.h>
+#include <errno.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include "claw_paths.h"
+#include "claw_utils_string.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "claw_core";
 
@@ -237,6 +245,132 @@ void claw_core_finish_from_plain_text(uint32_t request_id,
              claw_core_log_snippet_suffix(text));
 }
 
+/* bounded tool results (added): one tool result can be as large as the cap output
+ * buffer. When it exceeds CLAW_CORE_TOOL_RESULT_MAX_BYTES the full text is written
+ * under the writable DATA root and the model sees only a UTF-8-safe head plus the
+ * file path, which it can re-read with read_file offset/limit. Bounds the
+ * per-result context cost without discarding information. */
+#define CLAW_CORE_TOOL_RESULT_MAX_BYTES (8 * 1024)
+#define CLAW_CORE_TOOL_RESULT_HEAD_BYTES (4 * 1024)
+#define CLAW_CORE_TOOL_RESULT_SPILL_SUBDIR ".toolout"
+#define CLAW_CORE_TOOL_RESULT_HINT_RESERVE 448
+#define CLAW_CORE_TOOL_RESULT_SPILL_MAX_AGE_MS (10 * 60 * 1000ULL)
+#define CLAW_CORE_TOOL_RESULT_DIR_MAX 96
+#define CLAW_CORE_TOOL_RESULT_PATH_MAX 192
+
+static void claw_core_toolout_sanitize(const char *name, char *out, size_t out_size)
+{
+    size_t j = 0;
+
+    for (size_t i = 0; name && name[i] && j + 1 < out_size; i++) {
+        char c = name[i];
+
+        out[j++] = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_') ? c : '_';
+    }
+    out[j] = '\0';
+    if (j == 0 && out_size > 4) {
+        strlcpy(out, "tool", out_size);
+    }
+}
+
+/* Remove spill files older than the max age; the leading name field is the
+ * admission time in millis. Cheap enough to run on each spill. */
+static void claw_core_toolout_prune(const char *dir, uint64_t now_ms)
+{
+    DIR *d = opendir(dir);
+    struct dirent *entry;
+
+    if (!d) {
+        return;
+    }
+    while ((entry = readdir(d)) != NULL) {
+        char path[CLAW_CORE_TOOL_RESULT_PATH_MAX];
+        char *end = NULL;
+        unsigned long long ts;
+
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+        ts = strtoull(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '_') {
+            continue;
+        }
+        if (now_ms > ts && now_ms - ts > CLAW_CORE_TOOL_RESULT_SPILL_MAX_AGE_MS &&
+                snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) < (int)sizeof(path)) {
+            unlink(path);
+        }
+    }
+    closedir(d);
+}
+
+/* Takes ownership of tool_output; returns the model-visible string to use. */
+static char *claw_core_bound_tool_output(const claw_core_request_t *request,
+                                         const char *tool_name,
+                                         char *tool_output)
+{
+    char dir[CLAW_CORE_TOOL_RESULT_DIR_MAX];
+    char path[CLAW_CORE_TOOL_RESULT_PATH_MAX];
+    char safe_name[40];
+    char *bounded = NULL;
+    struct stat st = {0};
+    uint64_t now_ms;
+    size_t len;
+    size_t head;
+    FILE *file;
+
+    if (!tool_output) {
+        return NULL;
+    }
+    len = strlen(tool_output);
+    if (len <= CLAW_CORE_TOOL_RESULT_MAX_BYTES) {
+        return tool_output;
+    }
+
+    if (claw_paths_join(CLAW_PATH_DATA, CLAW_CORE_TOOL_RESULT_SPILL_SUBDIR, dir, sizeof(dir)) != ESP_OK) {
+        return tool_output;
+    }
+    if (stat(dir, &st) != 0 && mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        ESP_LOGW(TAG, "tool-out spill dir unavailable: %s", dir);
+        return tool_output;
+    }
+
+    now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    claw_core_toolout_prune(dir, now_ms);
+    claw_core_toolout_sanitize(tool_name, safe_name, sizeof(safe_name));
+    if (snprintf(path, sizeof(path), "%s/%llu_%" PRIu32 "_%s.txt",
+                 dir, (unsigned long long)now_ms, request ? request->request_id : 0U, safe_name)
+            >= (int)sizeof(path)) {
+        return tool_output;
+    }
+
+    file = fopen(path, "wb");
+    if (!file) {
+        return tool_output;
+    }
+    if (fwrite(tool_output, 1, len, file) != len) {
+        fclose(file);
+        unlink(path);
+        return tool_output;
+    }
+    fclose(file);
+
+    head = claw_utils_utf8_prefix_len(tool_output, CLAW_CORE_TOOL_RESULT_HEAD_BYTES);
+    bounded = malloc(head + CLAW_CORE_TOOL_RESULT_HINT_RESERVE + 1);
+    if (!bounded) {
+        return tool_output;
+    }
+    memcpy(bounded, tool_output, head);
+    bounded[head] = '\0';
+    snprintf(bounded + head,
+             CLAW_CORE_TOOL_RESULT_HINT_RESERVE + 1,
+             "\n[tool output truncated: showing first %u of %u bytes; full output saved to %s; "
+             "use read_file with offset/limit to read the rest]",
+             (unsigned)head, (unsigned)len, path);
+    free(tool_output);
+    return bounded;
+}
+
 esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,
                                                  cJSON *runtime_messages,
                                                  const claw_core_llm_response_t *response,
@@ -284,6 +418,12 @@ esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,
         if (err != ESP_OK && !tool_output) {
             tool_output = claw_utils_string_dup(esp_err_to_name(err));
         }
+        if (!tool_output) {
+            ret = ESP_ERR_NO_MEM;
+            goto cleanup;
+        }
+        /* Bound oversized results before they enter context (added). */
+        tool_output = claw_core_bound_tool_output(request, response->tool_calls[i].name, tool_output);
         if (!tool_output) {
             ret = ESP_ERR_NO_MEM;
             goto cleanup;

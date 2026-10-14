@@ -801,5 +801,8 @@ static esp_err_t claw_memory_long_term_collect(const claw_core_request_t *reques
 const claw_core_context_provider_t claw_memory_long_term_provider = {
     .name = "Long-term Memory",
     .collect = claw_memory_long_term_collect,
+    /* request-start snapshot (added): the summary-label catalog is stable within
+     * a request, so collect once instead of re-reading it every tool round. */
+    .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
     .user_ctx = NULL,
 };

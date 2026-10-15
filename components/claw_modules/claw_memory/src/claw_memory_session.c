@@ -73,6 +73,7 @@ static claw_memory_request_state_t *s_request_states = NULL;
 
 /* session-projection (added): runs on the async task to summarize old history. */
 static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_t keep_from);
+static void claw_memory_compact_pending_remove(const char *session_id);
 
 typedef struct {
     uint32_t offset;
@@ -304,6 +305,7 @@ static void claw_memory_async_extract_task(void *arg)
                 ESP_LOGW(TAG, "compaction job failed session=%s: %s",
                          job->session_id ? job->session_id : "?", esp_err_to_name(cerr));
             }
+            claw_memory_compact_pending_remove(job->session_id);
             claw_memory_async_extract_free_job(job);
             continue;
         }
@@ -2328,6 +2330,57 @@ done:
 }
 
 /* Enqueue an async compaction job (not tracked by the consumer path). */
+/* session-projection (added): at most one compaction in flight per session.
+ * Without this, every persist made while the replay is over budget enqueued
+ * another job (observed: 8 compactions in a 51-record session), each firing an
+ * extra concurrent LLM call and slowing the turn down. */
+#define CLAW_MEMORY_COMPACT_PENDING_MAX 4
+#define CLAW_MEMORY_COMPACT_SESSION_MAX 128
+static char s_compact_pending[CLAW_MEMORY_COMPACT_PENDING_MAX][CLAW_MEMORY_COMPACT_SESSION_MAX];
+
+static bool claw_memory_compact_pending_add(const char *session_id)
+{
+    bool added = false;
+
+    if (!session_id || !session_id[0] || !s_async_extract.lock) {
+        return false;
+    }
+    if (xSemaphoreTake(s_async_extract.lock, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    for (size_t i = 0; i < CLAW_MEMORY_COMPACT_PENDING_MAX; i++) {
+        if (s_compact_pending[i][0] && strcmp(s_compact_pending[i], session_id) == 0) {
+            xSemaphoreGive(s_async_extract.lock);
+            return false;  /* already queued or running */
+        }
+    }
+    for (size_t i = 0; i < CLAW_MEMORY_COMPACT_PENDING_MAX; i++) {
+        if (!s_compact_pending[i][0]) {
+            strlcpy(s_compact_pending[i], session_id, CLAW_MEMORY_COMPACT_SESSION_MAX);
+            added = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_async_extract.lock);
+    return added;
+}
+
+static void claw_memory_compact_pending_remove(const char *session_id)
+{
+    if (!session_id || !s_async_extract.lock) {
+        return;
+    }
+    if (xSemaphoreTake(s_async_extract.lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    for (size_t i = 0; i < CLAW_MEMORY_COMPACT_PENDING_MAX; i++) {
+        if (s_compact_pending[i][0] && strcmp(s_compact_pending[i], session_id) == 0) {
+            s_compact_pending[i][0] = '\0';
+        }
+    }
+    xSemaphoreGive(s_async_extract.lock);
+}
+
 static esp_err_t claw_memory_enqueue_compact_job(const char *session_id, uint32_t keep_from)
 {
     claw_memory_async_extract_job_t *job = NULL;
@@ -2335,8 +2388,12 @@ static esp_err_t claw_memory_enqueue_compact_job(const char *session_id, uint32_
     if (!session_id || !s_async_extract.queue) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (!claw_memory_compact_pending_add(session_id)) {
+        return ESP_OK;  /* one is already pending for this session */
+    }
     job = calloc(1, sizeof(*job));
     if (!job) {
+        claw_memory_compact_pending_remove(session_id);
         return ESP_ERR_NO_MEM;
     }
     job->session_id = dup_printf("%s", session_id);
@@ -2344,10 +2401,12 @@ static esp_err_t claw_memory_enqueue_compact_job(const char *session_id, uint32_
     job->keep_from = keep_from;
     if (!job->session_id) {
         claw_memory_async_extract_free_job(job);
+        claw_memory_compact_pending_remove(session_id);
         return ESP_ERR_NO_MEM;
     }
     if (xQueueSend(s_async_extract.queue, &job, 0) != pdTRUE) {
         claw_memory_async_extract_free_job(job);
+        claw_memory_compact_pending_remove(session_id);
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -2527,19 +2586,31 @@ cleanup:
         /* Retired mechanical >300KB compaction (documented no-op, see its body). */
         (void)session_history_compact_if_needed(batch->session_id, batch->request, data_path, idx_path);
 
-        /* session-projection (added): evaluate on EVERY persist, not only at turn
-         * end. A long turn that never completes (the user's interrupts keep it
-         * alive) would otherwise never compact, so the whole history keeps being
-         * replayed on each new request until the body runs out of memory
-         * ("Out of memory serializing request"). */
-        esp_err_t proj = session_history_project_if_needed(batch->session_id,
-                                                           batch->request,
-                                                           data_path,
-                                                           idx_path);
+        /* session-projection (added): evaluate on every persist, not only at turn
+         * end, so a turn that never completes still compacts. Skip the turn-start
+         * user persist, though: firing a compaction right before the first model
+         * call of a turn makes round 1 wait behind a second concurrent LLM call. */
+        {
+            bool turn_start_only = true;
+            size_t r;
 
-        if (proj != ESP_OK) {
-            ESP_LOGW(TAG, "projection planning failed session=%s: %s",
-                     batch->session_id, esp_err_to_name(proj));
+            for (r = 0; r < batch->record_count; r++) {
+                if (batch->records[r].type != CLAW_CORE_CONTEXT_RECORD_USER) {
+                    turn_start_only = false;
+                    break;
+                }
+            }
+            if (!turn_start_only) {
+                esp_err_t proj = session_history_project_if_needed(batch->session_id,
+                                                                   batch->request,
+                                                                   data_path,
+                                                                   idx_path);
+
+                if (proj != ESP_OK) {
+                    ESP_LOGW(TAG, "projection planning failed session=%s: %s",
+                             batch->session_id, esp_err_to_name(proj));
+                }
+            }
         }
     }
     free(data_path);

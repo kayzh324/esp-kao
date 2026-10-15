@@ -1152,12 +1152,72 @@ static esp_err_t cap_files_list_dir_execute(const char *input_json,
     return ESP_OK;
 }
 
+/* Case-insensitive bounded substring test (no copy of the needle). */
+static bool cap_files_grep_ci_contains(const char *haystack, const char *needle, size_t needle_len)
+{
+    if (!haystack || needle_len == 0) {
+        return false;
+    }
+    for (const char *cursor = haystack; *cursor; cursor++) {
+        size_t i;
+
+        for (i = 0; i < needle_len; i++) {
+            unsigned char hc = (unsigned char)cursor[i];
+            unsigned char nc = (unsigned char)needle[i];
+
+            if (hc == '\0') {
+                return false;
+            }
+            if (hc >= 'A' && hc <= 'Z') {
+                hc = (unsigned char)(hc - 'A' + 'a');
+            }
+            if (nc >= 'A' && nc <= 'Z') {
+                nc = (unsigned char)(nc - 'A' + 'a');
+            }
+            if (hc != nc) {
+                break;
+            }
+        }
+        if (i == needle_len) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A '|' in the pattern means "any of these alternatives" - the grep convention
+ * the model expects. There is no regex engine on this platform, so this is the
+ * only metacharacter; everything else is matched literally. */
 static bool cap_files_grep_match(const char *line, const char *pattern, bool case_sensitive)
 {
-    if (case_sensitive) {
-        return strstr(line, pattern) != NULL;
+    const char *alt = pattern;
+
+    if (!line || !pattern || !pattern[0]) {
+        return false;
     }
-    return cap_files_text_contains_ci(line, pattern);
+    while (alt && *alt) {
+        const char *bar = strchr(alt, '|');
+        size_t alt_len = bar ? (size_t)(bar - alt) : strlen(alt);
+        bool hit = false;
+
+        if (alt_len > 0) {
+            if (case_sensitive) {
+                for (const char *cursor = line; *cursor; cursor++) {
+                    if (strncmp(cursor, alt, alt_len) == 0) {
+                        hit = true;
+                        break;
+                    }
+                }
+            } else {
+                hit = cap_files_grep_ci_contains(line, alt, alt_len);
+            }
+        }
+        if (hit) {
+            return true;
+        }
+        alt = bar ? bar + 1 : NULL;
+    }
+    return false;
 }
 
 /* Emit one "path:lineno: text" hit, trimming the line ending. */
@@ -1305,6 +1365,11 @@ static esp_err_t cap_files_grep_files_execute(const char *input_json,
     const char *pattern = NULL;
     const char *file_filter = NULL;
     char resolved_path[256];
+    /* pattern/file_filter point into the parsed cJSON tree, which is deleted
+     * before the tail of this function still echoes the pattern; copy them so
+     * the echo cannot read freed memory (this produced garbled output). */
+    char pattern_copy[160] = {0};
+    char filter_copy[96] = {0};
     struct stat st = {0};
     bool case_sensitive = false;
     size_t max_results = CAP_FILES_GREP_DEFAULT_MAX_RESULTS;
@@ -1334,6 +1399,12 @@ static esp_err_t cap_files_grep_files_execute(const char *input_json,
         cJSON_Delete(root);
         snprintf(output, output_size, "Error: missing pattern");
         return ESP_ERR_INVALID_ARG;
+    }
+    strlcpy(pattern_copy, pattern, sizeof(pattern_copy));
+    pattern = pattern_copy;
+    if (file_filter && file_filter[0]) {
+        strlcpy(filter_copy, file_filter, sizeof(filter_copy));
+        file_filter = filter_copy;
     }
 
     cs = cJSON_GetObjectItem(root, "case_sensitive");
@@ -1685,7 +1756,7 @@ static const claw_cap_descriptor_t s_files_descriptors[] = {
         .id = "grep_files",
         .name = "grep_files",
         .family = "files",
-        .description = "Search file contents for a text pattern; returns path:line: text hits. Use this to locate code instead of reading whole files.",
+        .description = "Search file contents for plain text (no regex); returns path:line: text hits. Use | for alternatives, e.g. TIME_X|NET_Y. Locate code with this instead of reading whole files.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute file or directory path under an allowed directory\"},\"pattern\":{\"type\":\"string\",\"description\":\"Plain text to find (case-insensitive by default)\"},\"file_filter\":{\"type\":\"string\",\"description\":\"Optional substring to match against file names, e.g. .lua\"},\"case_sensitive\":{\"type\":\"boolean\",\"description\":\"Default false\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Default 100, max 200\"}},\"required\":[\"path\",\"pattern\"]}",

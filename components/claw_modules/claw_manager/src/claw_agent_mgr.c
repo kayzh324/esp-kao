@@ -1201,10 +1201,10 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
     err = claw_agent_mgr_start_subagent_locked(agent);
     if (err == ESP_OK) {
         request.request_id = claw_agent_mgr_next_request_id_locked();
-        /* sub-agent visibility (added): publish the subagent's per-round stage
-         * messages too, so a long delegation is observable instead of silent. */
-        request.flags = CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE |
-                        CLAW_CORE_REQUEST_FLAG_PUBLISH_STAGE_MESSAGE;
+        /* Subagent stage messages are NOT published: they land in the same
+         * channel as the root's without any attribution, which reads as one
+         * agent acting oddly. Reverted until visibility can carry the agent id. */
+        request.flags = CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE;
         request.session_id = agent->session_id;
         request.user_text = prompt;
         request.source_channel = parent_ctx->channel;

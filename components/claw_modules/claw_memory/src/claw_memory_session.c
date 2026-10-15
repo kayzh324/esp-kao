@@ -2523,20 +2523,23 @@ cleanup:
     if (idx_file && session_history_close_file(idx_file) != ESP_OK && err == ESP_OK) {
         err = ESP_FAIL;
     }
-    if (err == ESP_OK && batch->turn_completed) {
-        err = session_history_compact_if_needed(batch->session_id, batch->request, data_path, idx_path);
-        if (err == ESP_OK) {
-            /* session-projection (added): when replayed history grows past the
-             * trigger, queue a summary of the older part (async). */
-            esp_err_t proj = session_history_project_if_needed(batch->session_id,
-                                                               batch->request,
-                                                               data_path,
-                                                               idx_path);
+    if (err == ESP_OK) {
+        /* Retired mechanical >300KB compaction (documented no-op, see its body). */
+        (void)session_history_compact_if_needed(batch->session_id, batch->request, data_path, idx_path);
 
-            if (proj != ESP_OK) {
-                ESP_LOGW(TAG, "projection planning failed session=%s: %s",
-                         batch->session_id, esp_err_to_name(proj));
-            }
+        /* session-projection (added): evaluate on EVERY persist, not only at turn
+         * end. A long turn that never completes (the user's interrupts keep it
+         * alive) would otherwise never compact, so the whole history keeps being
+         * replayed on each new request until the body runs out of memory
+         * ("Out of memory serializing request"). */
+        esp_err_t proj = session_history_project_if_needed(batch->session_id,
+                                                           batch->request,
+                                                           data_path,
+                                                           idx_path);
+
+        if (proj != ESP_OK) {
+            ESP_LOGW(TAG, "projection planning failed session=%s: %s",
+                     batch->session_id, esp_err_to_name(proj));
         }
     }
     free(data_path);

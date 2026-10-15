@@ -42,7 +42,28 @@ it, or for running an existing script once.
 - For UI work the evidence is what appears on the panel.
 - Report intent and verification separately: what you *changed* vs what you *verified*.
 
-## 5. Environment
+## 5. Multi-session programs keep three short docs
+
+A one-off script (`tmp/`, run once) needs no docs. A **program** - multi-file, or worked on across
+sessions - keeps three short files in its own directory (`apps/<name>/`):
+
+| file | holds | size |
+| --- | --- | --- |
+| `REQ.md` | what the user wants | tens of lines |
+| `ARCH.md` | the files and who owns what | tens of lines |
+| `PROGRESS.md` | built / verified / todo / broken | append only |
+
+Why: your context dies between sessions, the disk does not. One fact per line, no filler, no restating
+code, `A -> B` for relations.
+
+- **Read budget per session**: the relevant `REQ.md` lines, the `ARCH.md` rows you will touch, the tail of
+  `PROGRESS.md`, and the one or two code files you will edit. Nothing else.
+- Do **not** write a plan document (`PLAN.md`, task cards, a design essay): every session would have to
+  re-read it, and it costs more than it returns.
+- Record intent and evidence apart: **user-confirmed = verified**; you only ran it yourself = **built**.
+- Locate by `ARCH.md` rows before opening code; never read the whole tree or every doc.
+
+## 6. Environment
 
 Follow the environment conventions already in your instructions: the writable data root vs read-only
 `/system`, `apps/<name>/` with `app.json`, `tmp/` for throwaway scripts, internal files are not task

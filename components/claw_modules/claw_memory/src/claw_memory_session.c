@@ -1123,10 +1123,12 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
             goto cleanup;
         }
 
-        /* reasoning-strip (added): the model's chain-of-thought is not needed
-         * across turns; drop it from replayed history (also cleans records that
-         * were persisted before this change). */
-        cJSON_DeleteItemFromObjectCaseSensitive(record, "reasoning_content");
+        /* reasoning-content (added): do NOT strip reasoning_content here. The
+         * upstream provider requires the model's reasoning to be passed back with
+         * replayed assistant turns in thinking mode; removing it makes the API
+         * reject the request with HTTP 400 ("reasoning_content ... must be passed
+         * back to the API"). Context size is bounded by session projection and the
+         * in-turn window instead. */
 
         if (session_history_backend_mismatch(entry->backend_format)) {
             if (type == CLAW_CORE_CONTEXT_RECORD_ASSISTANT_TOOL ||
@@ -2431,31 +2433,9 @@ done:
     return err;
 }
 
-/* reasoning-strip (added): return a copy of message_json with reasoning_content
- * removed, or NULL when there is nothing to strip (caller keeps the original).
- * The model's chain-of-thought is not needed across turns and would otherwise
- * bloat both the stored file and every later replay. */
-static char *session_history_strip_reasoning_json(const char *message_json)
-{
-    cJSON *msg = NULL;
-    char *out = NULL;
-
-    if (!message_json || !message_json[0]) {
-        return NULL;
-    }
-    msg = cJSON_Parse(message_json);
-    if (!msg) {
-        return NULL;
-    }
-    if (!cJSON_GetObjectItemCaseSensitive(msg, "reasoning_content")) {
-        cJSON_Delete(msg);
-        return NULL;
-    }
-    cJSON_DeleteItemFromObjectCaseSensitive(msg, "reasoning_content");
-    out = cJSON_PrintUnformatted(msg);
-    cJSON_Delete(msg);
-    return out;
-}
+/* reasoning-content (added): reasoning_content is stored and replayed verbatim.
+ * The upstream provider requires the model's reasoning to be passed back in
+ * thinking mode, so it must not be stripped. */
 
 esp_err_t claw_memory_persist_context_callback(const claw_core_context_persist_batch_t *batch,
                                                void *user_ctx)
@@ -2507,7 +2487,6 @@ esp_err_t claw_memory_persist_context_callback(const claw_core_context_persist_b
         const char *role = NULL;
         const char *text = NULL;
         const char *message_json = batch->records[i].message_json;
-        char *stripped_json = NULL;
 
         if (!message_json || !message_json[0]) {
             role = claw_memory_session_record_text_role(batch->records[i].type);
@@ -2516,17 +2495,13 @@ esp_err_t claw_memory_persist_context_callback(const claw_core_context_persist_b
                 err = ESP_ERR_INVALID_ARG;
                 break;
             }
-        } else {
-            /* reasoning-strip (added): store without chain-of-thought. */
-            stripped_json = session_history_strip_reasoning_json(message_json);
         }
         err = session_history_append_indexed_record(data_file,
                                                     idx_file,
                                                     batch->records[i].type,
-                                                    stripped_json ? stripped_json : message_json,
+                                                    message_json,
                                                     role,
                                                     text);
-        free(stripped_json);
         if (err != ESP_OK) {
             break;
         }

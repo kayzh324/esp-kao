@@ -38,6 +38,15 @@ static const char *TAG = "cap_files";
 #define CAP_FILES_EDIT_MAX_FILE_SIZE (32 * 1024)
 #define CAP_FILES_EDIT_TMP_SUFFIX ".tmp"
 
+/* grep_files (added): content search. Without it the model had to read whole
+ * files (hitting output truncation) or write throwaway Lua probes just to locate
+ * code - the main reason modifying an existing program cost more than writing a
+ * new one. Plain-text matching: the platform has no POSIX regex. */
+#define CAP_FILES_GREP_MAX_FILE_SIZE (64 * 1024)
+#define CAP_FILES_GREP_LINE_MAX_BYTES 400
+#define CAP_FILES_GREP_DEFAULT_MAX_RESULTS 100
+#define CAP_FILES_GREP_MAX_RESULTS_LIMIT 200
+
 /* Sandbox roots are resolved from claw_paths on demand so cap_files always
  * follows the live mount points (flash vs SD for DATA). Writability is fixed
  * by the semantic role of each logical root: DATA is writable, SYSTEM is the
@@ -1110,6 +1119,235 @@ static esp_err_t cap_files_list_dir_execute(const char *input_json,
     return ESP_OK;
 }
 
+static bool cap_files_grep_match(const char *line, const char *pattern, bool case_sensitive)
+{
+    if (case_sensitive) {
+        return strstr(line, pattern) != NULL;
+    }
+    return cap_files_text_contains_ci(line, pattern);
+}
+
+/* Emit one "path:lineno: text" hit, trimming the line ending. */
+static void cap_files_grep_emit(char *output, size_t output_size, size_t *used,
+                                const char *path, unsigned lineno, const char *line)
+{
+    size_t len = strlen(line);
+    int written;
+
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+        len--;
+    }
+    if (len > CAP_FILES_GREP_LINE_MAX_BYTES) {
+        len = CAP_FILES_GREP_LINE_MAX_BYTES;
+    }
+
+    written = snprintf(output + *used, output_size - *used, "%s:%u: %.*s\n",
+                       path, lineno, (int)len, line);
+    if (written < 0) {
+        return;
+    }
+    if ((size_t)written >= output_size - *used) {
+        *used = output_size - 1;
+        return;
+    }
+    *used += (size_t)written;
+    output[*used] = '\0';
+}
+
+static esp_err_t cap_files_grep_file(const char *file_path, const char *pattern, bool case_sensitive,
+                                     char *output, size_t output_size, size_t *used,
+                                     size_t *match_count, size_t max_results, bool *stopped)
+{
+    FILE *file = NULL;
+    char *line = NULL;
+    unsigned lineno = 0;
+
+    file = fopen(file_path, "rb");
+    if (!file) {
+        return ESP_OK;  /* unreadable file: skip it rather than fail the search */
+    }
+    line = malloc(CAP_FILES_GREP_LINE_MAX_BYTES + 1);
+    if (!line) {
+        fclose(file);
+        return ESP_ERR_NO_MEM;
+    }
+
+    while (fgets(line, CAP_FILES_GREP_LINE_MAX_BYTES + 1, file)) {
+        size_t len = strlen(line);
+        bool has_nl = (len > 0 && line[len - 1] == '\n');
+
+        lineno++;
+        if (cap_files_grep_match(line, pattern, case_sensitive)) {
+            cap_files_grep_emit(output, output_size, used, file_path, lineno, line);
+            (*match_count)++;
+            if (*match_count >= max_results) {
+                *stopped = true;
+                break;
+            }
+        }
+        if (!has_nl && !feof(file)) {
+            cap_files_drain_line(file);  /* long line: skip the remainder */
+        }
+    }
+
+    free(line);
+    fclose(file);
+    return ESP_OK;
+}
+
+static esp_err_t cap_files_grep_recursive(const char *dir_path, const char *pattern,
+                                          const char *file_filter, bool case_sensitive,
+                                          char *output, size_t output_size, size_t *used,
+                                          size_t *match_count, size_t max_results, bool *stopped)
+{
+    DIR *dir = NULL;
+    struct dirent *entry = NULL;
+
+    dir = opendir(dir_path);
+    if (!dir) {
+        return ESP_OK;
+    }
+
+    while (!*stopped && (entry = readdir(dir)) != NULL) {
+        char full_path[256];
+        struct stat st = {0};
+        esp_err_t err;
+
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        /* Skip dot-prefixed entries: also keeps internal dirs (.toolout,
+         * .versions) out of search results. */
+        if (cap_files_is_hidden_name(entry->d_name)) {
+            continue;
+        }
+        if (snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name) >= (int)sizeof(full_path)) {
+            continue;
+        }
+        if (!cap_files_path_is_valid(full_path) || stat(full_path, &st) != 0) {
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            err = cap_files_grep_recursive(full_path, pattern, file_filter, case_sensitive,
+                                           output, output_size, used, match_count, max_results, stopped);
+            if (err != ESP_OK) {
+                closedir(dir);
+                return err;
+            }
+            continue;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            continue;
+        }
+        if (file_filter && file_filter[0] && !cap_files_text_contains_ci(entry->d_name, file_filter)) {
+            continue;
+        }
+        if (st.st_size > CAP_FILES_GREP_MAX_FILE_SIZE) {
+            continue;
+        }
+
+        err = cap_files_grep_file(full_path, pattern, case_sensitive,
+                                  output, output_size, used, match_count, max_results, stopped);
+        if (err != ESP_OK) {
+            closedir(dir);
+            return err;
+        }
+    }
+
+    closedir(dir);
+    return ESP_OK;
+}
+
+/* grep_files (added): search file contents for a plain-text pattern. */
+static esp_err_t cap_files_grep_files_execute(const char *input_json,
+                                              const claw_cap_call_context_t *ctx,
+                                              char *output,
+                                              size_t output_size)
+{
+    cJSON *root = NULL;
+    cJSON *cs = NULL;
+    cJSON *mr = NULL;
+    const char *path = NULL;
+    const char *pattern = NULL;
+    const char *file_filter = NULL;
+    char resolved_path[256];
+    struct stat st = {0};
+    bool case_sensitive = false;
+    size_t max_results = CAP_FILES_GREP_DEFAULT_MAX_RESULTS;
+    size_t used = 0;
+    size_t matches = 0;
+    bool stopped = false;
+    esp_err_t err;
+
+    (void)ctx;
+
+    root = cJSON_Parse(input_json);
+    if (!root) {
+        snprintf(output, output_size, "Error: invalid JSON input");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    path = cJSON_GetStringValue(cJSON_GetObjectItem(root, "path"));
+    pattern = cJSON_GetStringValue(cJSON_GetObjectItem(root, "pattern"));
+    file_filter = cJSON_GetStringValue(cJSON_GetObjectItem(root, "file_filter"));
+
+    if (cap_files_resolve_path(path, resolved_path, sizeof(resolved_path)) != ESP_OK) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: path must be an absolute path within an allowed directory");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!pattern || !pattern[0]) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: missing pattern");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    cs = cJSON_GetObjectItem(root, "case_sensitive");
+    case_sensitive = cJSON_IsTrue(cs);
+    mr = cJSON_GetObjectItem(root, "max_results");
+    if (cJSON_IsNumber(mr) && mr->valueint > 0) {
+        max_results = (size_t)mr->valueint;
+        if (max_results > CAP_FILES_GREP_MAX_RESULTS_LIMIT) {
+            max_results = CAP_FILES_GREP_MAX_RESULTS_LIMIT;
+        }
+    }
+
+    if (stat(resolved_path, &st) != 0) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: path not found: %s", resolved_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    output[0] = '\0';
+    if (S_ISDIR(st.st_mode)) {
+        err = cap_files_grep_recursive(resolved_path, pattern, file_filter, case_sensitive,
+                                       output, output_size, &used, &matches, max_results, &stopped);
+    } else if (S_ISREG(st.st_mode)) {
+        err = cap_files_grep_file(resolved_path, pattern, case_sensitive,
+                                  output, output_size, &used, &matches, max_results, &stopped);
+    } else {
+        err = ESP_ERR_INVALID_ARG;
+    }
+    cJSON_Delete(root);
+
+    if (err != ESP_OK) {
+        snprintf(output, output_size, "Error: grep failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    if (matches == 0) {
+        snprintf(output, output_size, "(no matches for \"%s\" under %s)", pattern, resolved_path);
+        return ESP_OK;
+    }
+    if (used < output_size - 1) {
+        snprintf(output + used, output_size - used,
+                 "[grep_files: %u match(es)%s]",
+                 (unsigned)matches,
+                 stopped ? "; stopped at the result limit - narrow the pattern or raise max_results" : "");
+    }
+    return ESP_OK;
+}
+
 static const claw_cap_descriptor_t s_files_descriptors[] = {
     {
         .id = "read_file",
@@ -1120,6 +1358,16 @@ static const claw_cap_descriptor_t s_files_descriptors[] = {
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path under an allowed directory\"},\"offset\":{\"type\":\"integer\",\"description\":\"First line to show, 0-based (default 0)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return (default: as many as fit)\"}},\"required\":[\"path\"]}",
         .execute = cap_files_read_file_execute,
+    },
+    {
+        .id = "grep_files",
+        .name = "grep_files",
+        .family = "files",
+        .description = "Search file contents for a text pattern; returns path:line: text hits. Use this to locate code instead of reading whole files.",
+        .kind = CLAW_CAP_KIND_CALLABLE,
+        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute file or directory path under an allowed directory\"},\"pattern\":{\"type\":\"string\",\"description\":\"Plain text to find (case-insensitive by default)\"},\"file_filter\":{\"type\":\"string\",\"description\":\"Optional substring to match against file names, e.g. .lua\"},\"case_sensitive\":{\"type\":\"boolean\",\"description\":\"Default false\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Default 100, max 200\"}},\"required\":[\"path\",\"pattern\"]}",
+        .execute = cap_files_grep_files_execute,
     },
     {
         .id = "write_file",

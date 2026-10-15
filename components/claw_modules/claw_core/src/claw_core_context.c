@@ -373,11 +373,12 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
 
 /* in-turn window (added): runtime_messages accumulates every tool round and the
  * whole array is re-sent on each iteration, so a long turn grows the request body
- * without bound (a 29-round turn measured ~124 KB). Keep the most recent rounds
- * intact and shrink older ones - tool-result bodies and tool-call arguments - so
- * the request stays bounded. The full content is still persisted to the session,
- * so nothing is lost across turns. */
-#define CLAW_CORE_RUNTIME_KEEP_ROUNDS 6
+ * without bound. Trim ONLY when the accumulated bytes exceed a budget, then shrink
+ * the oldest rounds just enough to get back under it; the newest rounds are never
+ * touched. Deliberately conservative: dropping recent in-turn detail makes the
+ * model redo work it already did. Full content stays in the session. */
+#define CLAW_CORE_RUNTIME_BUDGET_BYTES (48 * 1024)
+#define CLAW_CORE_RUNTIME_KEEP_ROUNDS 4
 #define CLAW_CORE_RUNTIME_ARG_MAX_BYTES 200
 #define CLAW_CORE_RUNTIME_OMITTED_NOTE "[older tool result omitted to bound context; full content is in the session history]"
 
@@ -390,6 +391,33 @@ static bool claw_core_message_has_tool_calls(const cJSON *message)
     }
     tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
     return cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0;
+}
+
+/* Approximate the bytes a message contributes to the request body. */
+static size_t claw_core_message_bytes(const cJSON *message)
+{
+    const cJSON *content;
+    const cJSON *tool_calls;
+    const cJSON *call = NULL;
+    size_t total = 0;
+
+    if (!cJSON_IsObject(message)) {
+        return 0;
+    }
+    content = cJSON_GetObjectItemCaseSensitive(message, "content");
+    if (cJSON_IsString(content) && content->valuestring) {
+        total += strlen(content->valuestring);
+    }
+    tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
+    cJSON_ArrayForEach(call, tool_calls) {
+        const cJSON *fn = cJSON_GetObjectItemCaseSensitive(call, "function");
+        const cJSON *args = fn ? cJSON_GetObjectItemCaseSensitive(fn, "arguments") : NULL;
+
+        if (cJSON_IsString(args) && args->valuestring) {
+            total += strlen(args->valuestring);
+        }
+    }
+    return total;
 }
 
 static void claw_core_shrink_message(cJSON *message)
@@ -431,16 +459,22 @@ static void claw_core_shrink_message(cJSON *message)
 void claw_core_trim_runtime_messages(cJSON *runtime_messages)
 {
     size_t count;
+    size_t total = 0;
     size_t rounds = 0;
-    size_t cut_round;
-    size_t seen = 0;
-    size_t cut_index;
+    size_t seen_rounds = 0;
+    size_t shrinkable;
     size_t i;
 
     if (!cJSON_IsArray(runtime_messages)) {
         return;
     }
     count = cJSON_GetArraySize(runtime_messages);
+    for (i = 0; i < count; i++) {
+        total += claw_core_message_bytes(cJSON_GetArrayItem(runtime_messages, i));
+    }
+    if (total <= CLAW_CORE_RUNTIME_BUDGET_BYTES) {
+        return;  /* small turn: leave everything intact */
+    }
 
     for (i = 0; i < count; i++) {
         if (claw_core_message_has_tool_calls(cJSON_GetArrayItem(runtime_messages, i))) {
@@ -450,20 +484,26 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
     if (rounds <= CLAW_CORE_RUNTIME_KEEP_ROUNDS) {
         return;
     }
-    cut_round = rounds - CLAW_CORE_RUNTIME_KEEP_ROUNDS;
+    shrinkable = rounds - CLAW_CORE_RUNTIME_KEEP_ROUNDS;
 
-    for (i = 0; i < count; i++) {
-        if (claw_core_message_has_tool_calls(cJSON_GetArrayItem(runtime_messages, i))) {
-            if (seen == cut_round) {
-                break;
+    for (i = 0; i < count && total > CLAW_CORE_RUNTIME_BUDGET_BYTES; i++) {
+        cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
+        size_t before;
+        size_t after;
+
+        if (claw_core_message_has_tool_calls(message)) {
+            seen_rounds++;
+            if (seen_rounds > shrinkable) {
+                break;  /* newest rounds are protected */
             }
-            seen++;
+        } else if (seen_rounds == 0) {
+            continue;  /* messages before the first tool round (e.g. the user) */
         }
-    }
-    cut_index = i;  /* first message of the oldest kept round */
 
-    for (i = 0; i < cut_index; i++) {
-        claw_core_shrink_message(cJSON_GetArrayItem(runtime_messages, i));
+        before = claw_core_message_bytes(message);
+        claw_core_shrink_message(message);
+        after = claw_core_message_bytes(message);
+        total -= (before > after) ? (before - after) : 0;
     }
 }
 

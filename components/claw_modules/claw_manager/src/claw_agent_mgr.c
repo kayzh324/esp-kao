@@ -34,10 +34,12 @@ static const char *TAG = "claw_agent_mgr";
 #define CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS 1000
 #define CLAW_AGENT_MGR_NOTIFY_RETRY_DELAY_MS    200
 #define CLAW_AGENT_MGR_REAPER_PERIOD_MS         15000
-/* A working agent cycles phases (build -> llm -> tool -> ...) and a single LLM
- * call may legitimately take up to ~120 s, so only an unchanged phase held for
- * well over that marks a wedge. */
-#define CLAW_AGENT_MGR_REAPER_STUCK_MS          150000
+/* stuck-window (added): the window must EXCEED the configured LLM timeout,
+ * otherwise a legitimately slow model call is misreported as a wedge. Observed
+ * on device: a 300 s llm_timeout_ms against the old fixed 150 s threshold made
+ * the reaper fire on subagents that were merely waiting on the model. */
+#define CLAW_AGENT_MGR_REAPER_STUCK_MARGIN_MS   60000
+#define CLAW_AGENT_MGR_REAPER_DEFAULT_LLM_MS    120000
 #define CLAW_AGENT_MGR_REAPER_TASK_STACK        4096
 #define CLAW_AGENT_MGR_REAPER_TASK_PRIO         4
 
@@ -938,9 +940,22 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
  * tool, a wedged HTTP call, a stack fault) never reaches one, so its parent would
  * wait forever. This sweep detects "running but the loop has been idle for a
  * while" and reports it to the parent once, then marks the agent failed. */
+/* stuck-window (added): derive the wedge threshold from the configured LLM
+ * timeout so a legitimately slow model call is never reported as stuck. */
+static uint32_t claw_agent_mgr_reaper_stuck_ms(void)
+{
+    uint32_t timeout = s_mgr.core_config.timeout_ms;
+
+    if (timeout == 0) {
+        timeout = CLAW_AGENT_MGR_REAPER_DEFAULT_LLM_MS;
+    }
+    return timeout + CLAW_AGENT_MGR_REAPER_STUCK_MARGIN_MS;
+}
+
 static void claw_agent_mgr_reap_stuck_once(void)
 {
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    uint32_t stuck_ms = claw_agent_mgr_reaper_stuck_ms();
 
     for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
         claw_agent_mgr_parent_route_t route;
@@ -973,17 +988,17 @@ static void claw_agent_mgr_reap_stuck_once(void)
                     agent->last_phase = phase;
                     agent->phase_since_ms = now_ms;
                 } else if (!agent->stuck_reported &&
-                           (uint32_t)(now_ms - agent->phase_since_ms) > CLAW_AGENT_MGR_REAPER_STUCK_MS) {
+                           (uint32_t)(now_ms - agent->phase_since_ms) > stuck_ms) {
                     agent->stuck_reported = true;
                     agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
                     snprintf(agent->last_error, sizeof(agent->last_error),
-                             "no progress for ~%u s", (unsigned)(CLAW_AGENT_MGR_REAPER_STUCK_MS / 1000));
+                             "no progress for ~%u s", (unsigned)(stuck_ms / 1000));
                     snprintf(text, sizeof(text),
                              "<subagent_stuck agent_id=\"%s\">No progress for ~%u s: the subagent is still "
                              "marked running but its loop has not advanced, so it likely crashed or wedged. "
                              "inspect_agent shows its last_error. Resume it with send_agent_followup, or "
                              "close_agent to stop it and finish the work yourself.</subagent_stuck>",
-                             agent->agent_id, (unsigned)(CLAW_AGENT_MGR_REAPER_STUCK_MS / 1000));
+                             agent->agent_id, (unsigned)(stuck_ms / 1000));
                     claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
                     do_notify = true;
                     ESP_LOGW(TAG, "reaper: subagent %s looks stuck; notifying parent", agent->agent_id);

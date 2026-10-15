@@ -103,6 +103,13 @@ esp_err_t claw_agent_mgr_list_agents(const claw_cap_call_context_t *ctx,
                                      claw_agent_mgr_agent_info_t *out_infos,
                                      size_t max_infos,
                                      size_t *out_count);
+/* monitoring snapshot (added): list subagents without an agent ctx, optionally
+ * filtered to one chat by matching the filter against parent_session_id (which
+ * embeds the chat key). Used by the local web UI to show which agents are busy. */
+esp_err_t claw_agent_mgr_agent_snapshot(const char *parent_session_filter,
+                                        claw_agent_mgr_agent_info_t *out_infos,
+                                        size_t max_infos,
+                                        size_t *out_count);
 esp_err_t claw_agent_mgr_close_agent(const claw_cap_call_context_t *ctx,
                                      const char *agent_id);
 esp_err_t claw_agent_mgr_delete_agent(const claw_cap_call_context_t *ctx,

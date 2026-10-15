@@ -172,6 +172,24 @@ export function fetchStatus(signal?: AbortSignal) {
   return request<StatusInfo>('/api/status', { signal }, 'Failed to load status');
 }
 
+/** agent-monitor: one subagent's state, used by the status lights. */
+export interface AgentState {
+  type: string;
+  status: string;
+  busy: boolean;
+}
+
+export interface AgentStatesResponse {
+  ok: boolean;
+  agents?: AgentState[];
+}
+
+/** Subagent states, optionally narrowed to one chat. */
+export function fetchAgentStates(chatId?: string, signal?: AbortSignal) {
+  const qs = chatId ? '?chat_id=' + encodeURIComponent(chatId) : '';
+  return request<AgentStatesResponse>('/api/agents' + qs, { signal }, 'Failed to read agent states');
+}
+
 /** Fetch a subset of the configuration, filtered by group names. */
 export function fetchConfigGroups(groups: ConfigGroup[] | 'all') {
   if (groups === 'all') {

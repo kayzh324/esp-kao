@@ -22,6 +22,7 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Banner } from '../components/ui/Banner';
 import { Switch } from '../components/ui/Switch';
+import { AgentLights } from '../components/system/AgentLights';
 import { t } from '../i18n';
 import { pushToast } from '../state/toast';
 
@@ -466,12 +467,15 @@ export const WebImPage: Component = () => {
         title={t('navWebIm') as string}
         description={t('webimDesc') as string}
         actions={
-          <Show when={wsReady()}>
-            <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[rgba(104,211,145,0.2)] bg-[var(--color-green-dim)] text-[var(--color-green)] text-[0.78rem] font-medium">
-              <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] pulse-dot" />
-              {t('webimOnline')}
-            </span>
-          </Show>
+          <div class="flex items-center gap-3">
+            <AgentLights chatId={chatId} />
+            <Show when={wsReady()}>
+              <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[rgba(104,211,145,0.2)] bg-[var(--color-green-dim)] text-[var(--color-green)] text-[0.78rem] font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] pulse-dot" />
+                {t('webimOnline')}
+              </span>
+            </Show>
+          </div>
         }
       />
 

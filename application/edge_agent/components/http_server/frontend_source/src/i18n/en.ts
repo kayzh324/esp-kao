@@ -29,6 +29,12 @@ export const en = {
   webimDesc: 'Interact with ESP-Claw in real time via WebSocket.',
   webimSend: 'Send',
   webimOnline: 'Online',
+  agentLightsHint:
+    'Subagent status: gray = never dispatched, green = idle, amber = working, red = error',
+  agentType_subagent: 'Generic',
+  agentType_recon: 'Recon',
+  agentType_build: 'Build',
+  agentType_verify: 'Verify',
   webimPlaceholder: 'Message…',
   webimAttach: 'Image',
   webimNoBind:

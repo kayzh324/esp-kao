@@ -1420,6 +1420,42 @@ esp_err_t claw_agent_mgr_list_agents(const claw_cap_call_context_t *ctx,
     return ESP_OK;
 }
 
+/* monitoring snapshot (added): no caller ctx needed, so a local UI can show
+ * which agents exist and what they are doing. */
+esp_err_t claw_agent_mgr_agent_snapshot(const char *parent_session_filter,
+                                        claw_agent_mgr_agent_info_t *out_infos,
+                                        size_t max_infos,
+                                        size_t *out_count)
+{
+    size_t count = 0;
+
+    if (!out_infos || max_infos == 0 || !out_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!claw_agent_mgr_is_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    claw_agent_mgr_lock();
+    for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS && count < max_infos; i++) {
+        const claw_agent_mgr_agent_t *agent = &s_mgr.agents[i];
+
+        if (!agent->occupied || agent->role != CLAW_AGENT_MGR_ROLE_SUBAGENT) {
+            continue;
+        }
+        if (parent_session_filter && parent_session_filter[0] &&
+                !strstr(agent->parent_session_id, parent_session_filter)) {
+            continue;
+        }
+        claw_agent_mgr_fill_info_locked(agent, &out_infos[count]);
+        count++;
+    }
+    claw_agent_mgr_unlock();
+
+    *out_count = count;
+    return ESP_OK;
+}
+
 esp_err_t claw_agent_mgr_close_agent(const claw_cap_call_context_t *ctx,
                                      const char *agent_id)
 {

@@ -48,10 +48,62 @@ static esp_err_t restart_handler(httpd_req_t *req)
     return http_server_send_json_response(req, root);
 }
 
+/* agent-monitor (added): subagent status for the web UI's status lights. */
+#define HTTP_SERVER_AGENTS_JSON_MAX 2048
+
+static esp_err_t agents_handler(httpd_req_t *req)
+{
+    http_server_ctx_t *ctx = http_server_ctx();
+    char chat_id[64] = {0};
+    char *buf = NULL;
+    const char *query;
+    esp_err_t err;
+
+    if (!ctx->services.get_agents) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Agents endpoint not supported");
+    }
+
+    /* Optional ?chat_id=<id> narrows the list to one chat. */
+    query = strchr(req->uri, '?');
+    if (query) {
+        const char *p = strstr(query, "chat_id=");
+
+        if (p) {
+            size_t n;
+
+            p += strlen("chat_id=");
+            n = strcspn(p, "&");
+            if (n >= sizeof(chat_id)) {
+                n = sizeof(chat_id) - 1;
+            }
+            memcpy(chat_id, p, n);
+            chat_id[n] = '\0';
+        }
+    }
+
+    buf = malloc(HTTP_SERVER_AGENTS_JSON_MAX);
+    if (!buf) {
+        httpd_resp_send_500(req);
+        return ESP_ERR_NO_MEM;
+    }
+    err = ctx->services.get_agents(chat_id, buf, HTTP_SERVER_AGENTS_JSON_MAX);
+    if (err != ESP_OK) {
+        free(buf);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read agents");
+    }
+    err = httpd_resp_set_type(req, "application/json");
+    if (err == ESP_OK) {
+        err = httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
+    free(buf);
+    return err;
+}
+
 esp_err_t http_server_register_status_routes(httpd_handle_t server)
 {
     const httpd_uri_t handlers[] = {
         { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler },
+        { .uri = "/api/agents", .method = HTTP_GET, .handler = agents_handler },
         { .uri = "/api/restart", .method = HTTP_POST, .handler = restart_handler },
     };
 

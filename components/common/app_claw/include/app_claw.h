@@ -72,6 +72,10 @@ esp_err_t app_claw_apply_config(const app_claw_config_t *config);
 claw_core_handle_t app_claw_get_core(void);
 esp_err_t app_claw_ui_start(void);
 esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid);
+/* agent-monitor (added): serialize subagent states as
+ * {"ok":true,"agents":[{"type","status","busy"},...]} for the local web UI.
+ * chat_id_filter may be NULL to list every agent. */
+esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, size_t out_json_size);
 
 #ifdef __cplusplus
 }

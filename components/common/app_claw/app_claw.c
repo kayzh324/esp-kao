@@ -533,6 +533,65 @@ esp_err_t app_claw_ui_start(void)
 #endif
 }
 
+/* agent-monitor (added): subagent states for the local web UI's status lights. */
+esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, size_t out_json_size)
+{
+    claw_agent_mgr_agent_info_t infos[8];
+    size_t count = 0;
+    size_t used;
+    int written;
+    esp_err_t err;
+
+    if (!out_json || out_json_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out_json[0] = '\0';
+
+    err = claw_agent_mgr_agent_snapshot(chat_id_filter, infos, sizeof(infos) / sizeof(infos[0]), &count);
+    if (err != ESP_OK) {
+        snprintf(out_json, out_json_size, "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        return err;
+    }
+
+    written = snprintf(out_json, out_json_size, "{\"ok\":true,\"agents\":[");
+    if (written < 0 || (size_t)written >= out_json_size) {
+        out_json[out_json_size - 1] = '\0';
+        return ESP_OK;
+    }
+    used = (size_t)written;
+
+    for (size_t i = 0; i < count && used + 96 < out_json_size; i++) {
+        const char *status;
+        bool busy;
+
+        switch (infos[i].status) {
+        case CLAW_AGENT_MGR_STATUS_RUNNING: status = "running"; break;
+        case CLAW_AGENT_MGR_STATUS_IDLE: status = "idle"; break;
+        case CLAW_AGENT_MGR_STATUS_COMPLETED: status = "completed"; break;
+        case CLAW_AGENT_MGR_STATUS_CLOSED: status = "closed"; break;
+        case CLAW_AGENT_MGR_STATUS_ERROR: status = "error"; break;
+        default: status = "empty"; break;
+        }
+        busy = infos[i].status == CLAW_AGENT_MGR_STATUS_RUNNING &&
+               infos[i].phase != CLAW_CORE_AGENT_LOOP_PHASE_IDLE;
+
+        written = snprintf(out_json + used, out_json_size - used,
+                           "%s{\"type\":\"%s\",\"status\":\"%s\",\"busy\":%s}",
+                           i > 0 ? "," : "",
+                           infos[i].agent_type,
+                           status,
+                           busy ? "true" : "false");
+        if (written < 0 || (size_t)written >= out_json_size - used) {
+            out_json[used] = '\0';
+            break;
+        }
+        used += (size_t)written;
+    }
+
+    snprintf(out_json + used, out_json_size - used, "]}");
+    return ESP_OK;
+}
+
 esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid)
 {
 #if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE

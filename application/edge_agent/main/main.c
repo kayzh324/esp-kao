@@ -346,6 +346,7 @@ void app_main(void)
             .load_config = main_load_config,
             .save_config = main_save_config,
             .get_wifi_status = main_get_wifi_status,
+            .get_agents = app_claw_get_agents_json,
             .restart_device = main_restart_device,
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
             .wechat_login_start = main_wechat_login_start,

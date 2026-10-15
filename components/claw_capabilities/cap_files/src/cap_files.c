@@ -47,6 +47,13 @@ static const char *TAG = "cap_files";
 #define CAP_FILES_GREP_DEFAULT_MAX_RESULTS 100
 #define CAP_FILES_GREP_MAX_RESULTS_LIMIT 200
 
+/* versioned writes (added): before a write/edit replaces a file, the previous
+ * content is snapshotted to a deterministic path and reported in the tool result,
+ * so "is there a backup and where" is TOLD to the model instead of probed. */
+#define CAP_FILES_VERSIONS_DIRNAME ".versions"
+#define CAP_FILES_VERSIONS_KEEP 5
+#define CAP_FILES_VERSION_PATH_MAX 320
+
 /* Sandbox roots are resolved from claw_paths on demand so cap_files always
  * follows the live mount points (flash vs SD for DATA). Writability is fixed
  * by the semantic role of each logical root: DATA is writable, SYSTEM is the
@@ -444,6 +451,11 @@ static void cap_files_emit_line(char *output,
     output[*used] = '\0';
 }
 
+/* versioned writes (added): defined further down; declared here because the file
+ * executors below snapshot before they overwrite. */
+static esp_err_t cap_files_snapshot(const char *resolved_path,
+                                    char *out_version_path, size_t out_size);
+
 /* Line-numbered, paged file reader (added): returns a window [offset, offset+limit)
  * of lines with "N: " prefixes, plus a continuation hint when the window ends
  * before EOF. Replaces the previous whole-file byte dump. */
@@ -597,9 +609,11 @@ static esp_err_t cap_files_write_file_execute(const char *input_json,
     const char *path = NULL;
     const char *content = NULL;
     char resolved_path[256];
+    char saved_version[CAP_FILES_VERSION_PATH_MAX] = {0};
     FILE *file = NULL;
     size_t content_len;
     size_t written;
+    bool had_previous = false;
 
     (void)ctx;
 
@@ -634,6 +648,9 @@ static esp_err_t cap_files_write_file_execute(const char *input_json,
         return ESP_FAIL;
     }
 
+    /* Snapshot whatever is being replaced, and say so in the result. */
+    had_previous = (cap_files_snapshot(resolved_path, saved_version, sizeof(saved_version)) == ESP_OK);
+
     file = fopen(resolved_path, "wb");
     if (!file) {
         cJSON_Delete(root);
@@ -655,7 +672,12 @@ static esp_err_t cap_files_write_file_execute(const char *input_json,
         return ESP_FAIL;
     }
 
-    snprintf(output, output_size, "OK: wrote %d bytes to %s", (int)written, resolved_path);
+    if (had_previous) {
+        snprintf(output, output_size, "OK: wrote %d bytes to %s (previous version saved: %s)",
+                 (int)written, resolved_path, saved_version);
+    } else {
+        snprintf(output, output_size, "OK: wrote %d bytes to %s (new file)", (int)written, resolved_path);
+    }
     return ESP_OK;
 }
 
@@ -718,12 +740,14 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
     const char *path = NULL;
     char resolved_path[256];
     char tmp_path[264];
+    char saved_version[CAP_FILES_VERSION_PATH_MAX] = {0};
     struct stat st = {0};
     FILE *file = NULL;
     char *content = NULL;
     size_t content_len = 0;
     size_t applied = 0;
     esp_err_t result = ESP_OK;
+    bool had_previous = false;
 
     (void)ctx;
 
@@ -840,6 +864,10 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
         goto done;
     }
 
+    /* Snapshot the pre-edit content and report it, so a bad edit is recoverable
+     * without the model first hunting for a backup. */
+    had_previous = (cap_files_snapshot(resolved_path, saved_version, sizeof(saved_version)) == ESP_OK);
+
     file = fopen(tmp_path, "wb");
     if (!file) {
         ESP_LOGE(TAG, "fopen %s: errno=%d", tmp_path, errno);
@@ -872,7 +900,12 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
         }
     }
 
-    snprintf(output, output_size, "OK: replaced %u edit(s) in %s", (unsigned)applied, resolved_path);
+    if (had_previous) {
+        snprintf(output, output_size, "OK: replaced %u edit(s) in %s (previous version saved: %s)",
+                 (unsigned)applied, resolved_path, saved_version);
+    } else {
+        snprintf(output, output_size, "OK: replaced %u edit(s) in %s", (unsigned)applied, resolved_path);
+    }
 
 done:
     free(content);
@@ -1348,6 +1381,295 @@ static esp_err_t cap_files_grep_files_execute(const char *input_json,
     return ESP_OK;
 }
 
+/* versioned writes (added): see the defines at the top of this file. */
+/* "<data_root>/.versions" + the file's own absolute path (which already starts
+ * with the data root), so versions mirror the tree and are human-readable. */
+static esp_err_t cap_files_versions_dir_for(const char *resolved_path, char *dir, size_t dir_size)
+{
+    const char *data_root = claw_paths_get(CLAW_PATH_DATA);
+    int written;
+
+    if (!data_root) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    written = snprintf(dir, dir_size, "%s/%s%s", data_root, CAP_FILES_VERSIONS_DIRNAME, resolved_path);
+    if (written <= 0 || (size_t)written >= dir_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t cap_files_ensure_dir_recursive(const char *dir)
+{
+    char probe[CAP_FILES_VERSION_PATH_MAX];
+
+    if (snprintf(probe, sizeof(probe), "%s/v", dir) >= (int)sizeof(probe)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return cap_files_ensure_parent_dirs(probe);
+}
+
+/* Delete the lowest-numbered version in dir. Returns true if one was removed. */
+static bool cap_files_delete_lowest_version(const char *dir)
+{
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    unsigned lowest = 0;
+    bool found = false;
+
+    if (!d) {
+        return false;
+    }
+    while ((e = readdir(d)) != NULL) {
+        char *end = NULL;
+        unsigned long v = strtoul(e->d_name, &end, 10);
+
+        if (end == e->d_name || *end != '\0') {
+            continue;
+        }
+        if (!found || v < lowest) {
+            lowest = (unsigned)v;
+            found = true;
+        }
+    }
+    closedir(d);
+    if (!found) {
+        return false;
+    }
+
+    {
+        char victim[CAP_FILES_VERSION_PATH_MAX];
+
+        if (snprintf(victim, sizeof(victim), "%s/%u", dir, lowest) >= (int)sizeof(victim)) {
+            return false;
+        }
+        return unlink(victim) == 0;
+    }
+}
+
+/* Snapshot the current content of resolved_path as the next version. Returns
+ * ESP_ERR_NOT_FOUND when the file does not exist yet (nothing to snapshot). */
+static esp_err_t cap_files_snapshot(const char *resolved_path,
+                                    char *out_version_path, size_t out_size)
+{
+    char dir[CAP_FILES_VERSION_PATH_MAX];
+    struct stat st = {0};
+    DIR *d = NULL;
+    struct dirent *e;
+    unsigned max_v = 0;
+    unsigned count = 0;
+    FILE *in = NULL;
+    FILE *out = NULL;
+    uint8_t buf[512];
+    size_t n;
+    esp_err_t err = ESP_OK;
+
+    if (stat(resolved_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (cap_files_versions_dir_for(resolved_path, dir, sizeof(dir)) != ESP_OK) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (cap_files_ensure_dir_recursive(dir) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    d = opendir(dir);
+    if (d) {
+        while ((e = readdir(d)) != NULL) {
+            char *end = NULL;
+            unsigned long v = strtoul(e->d_name, &end, 10);
+
+            if (end == e->d_name || *end != '\0') {
+                continue;
+            }
+            count++;
+            if (v > max_v) {
+                max_v = (unsigned)v;
+            }
+        }
+        closedir(d);
+    }
+    if (snprintf(out_version_path, out_size, "%s/%u", dir, max_v + 1) >= (int)out_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    in = fopen(resolved_path, "rb");
+    if (!in) {
+        return ESP_FAIL;
+    }
+    out = fopen(out_version_path, "wb");
+    if (!out) {
+        fclose(in);
+        return ESP_FAIL;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            err = ESP_FAIL;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        err = ESP_FAIL;
+    }
+    fclose(in);
+    fclose(out);
+    if (err != ESP_OK) {
+        unlink(out_version_path);
+        return err;
+    }
+
+    count++;  /* the version just written */
+    while (count > CAP_FILES_VERSIONS_KEEP) {
+        if (!cap_files_delete_lowest_version(dir)) {
+            break;
+        }
+        count--;
+    }
+    return ESP_OK;
+}
+
+/* restore_file (added): put a snapshotted version back, snapshotting the current
+ * content first so the restore itself is undoable. */
+static esp_err_t cap_files_restore_file_execute(const char *input_json,
+                                                const claw_cap_call_context_t *ctx,
+                                                char *output,
+                                                size_t output_size)
+{
+    cJSON *root = NULL;
+    cJSON *jv = NULL;
+    const char *path = NULL;
+    char resolved_path[256];
+    char dir[CAP_FILES_VERSION_PATH_MAX];
+    char version_path[CAP_FILES_VERSION_PATH_MAX];
+    char list[160];
+    struct stat st = {0};
+    DIR *d = NULL;
+    struct dirent *e;
+    unsigned want = 0;
+    unsigned max_v = 0;
+    bool found_want = false;
+    size_t list_used = 0;
+    FILE *in = NULL;
+    FILE *out = NULL;
+    uint8_t buf[512];
+    size_t n;
+    esp_err_t err = ESP_OK;
+
+    (void)ctx;
+
+    root = cJSON_Parse(input_json);
+    if (!root) {
+        snprintf(output, output_size, "Error: invalid JSON input");
+        return ESP_ERR_INVALID_ARG;
+    }
+    path = cJSON_GetStringValue(cJSON_GetObjectItem(root, "path"));
+    jv = cJSON_GetObjectItem(root, "version");
+    if (cJSON_IsNumber(jv) && jv->valueint > 0) {
+        want = (unsigned)jv->valueint;
+    }
+    if (cap_files_resolve_path(path, resolved_path, sizeof(resolved_path)) != ESP_OK) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: path must be an absolute path within an allowed directory");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!cap_files_path_is_writable(resolved_path)) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: read-only path: %s", resolved_path);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cap_files_versions_dir_for(resolved_path, dir, sizeof(dir)) != ESP_OK) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: path too long for versioning");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    list[0] = '\0';
+    d = opendir(dir);
+    if (d) {
+        while ((e = readdir(d)) != NULL) {
+            char *end = NULL;
+            unsigned long v = strtoul(e->d_name, &end, 10);
+
+            if (end == e->d_name || *end != '\0') {
+                continue;
+            }
+            if (v > max_v) {
+                max_v = (unsigned)v;
+            }
+            if (want != 0 && v == want) {
+                found_want = true;
+            }
+            if (list_used + 12 < sizeof(list)) {
+                list_used += (size_t)snprintf(list + list_used, sizeof(list) - list_used, "%lu,", v);
+            }
+        }
+        closedir(d);
+    }
+    if (max_v == 0) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: no versions saved for %s", resolved_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (want == 0) {
+        want = max_v;  /* default: the latest version */
+    } else if (!found_want) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: no version %u for %s; available: %s",
+                 want, resolved_path, list);
+        return ESP_ERR_NOT_FOUND;
+    }
+    cJSON_Delete(root);
+
+    if (snprintf(version_path, sizeof(version_path), "%s/%u", dir, want) >= (int)sizeof(version_path)) {
+        snprintf(output, output_size, "Error: version path too long");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (stat(version_path, &st) != 0) {
+        snprintf(output, output_size, "Error: version file missing: %s", version_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Keep the current content recoverable too (ignore when the file is absent).
+     * Uses its own buffer: the snapshot call writes the new version's path, which
+     * must not clobber version_path (that is the version being restored). */
+    {
+        char discard_version[CAP_FILES_VERSION_PATH_MAX];
+
+        (void)cap_files_snapshot(resolved_path, discard_version, sizeof(discard_version));
+    }
+
+    in = fopen(version_path, "rb");
+    if (!in) {
+        snprintf(output, output_size, "Error: cannot open %s", version_path);
+        return ESP_FAIL;
+    }
+    out = fopen(resolved_path, "wb");
+    if (!out) {
+        fclose(in);
+        snprintf(output, output_size, "Error: cannot open %s for writing", resolved_path);
+        return ESP_FAIL;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            err = ESP_FAIL;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        err = ESP_FAIL;
+    }
+    fclose(in);
+    fclose(out);
+    if (err != ESP_OK) {
+        snprintf(output, output_size, "Error: failed to restore %s", resolved_path);
+        return err;
+    }
+
+    snprintf(output, output_size, "OK: restored version %u of %s", want, resolved_path);
+    return ESP_OK;
+}
+
 static const claw_cap_descriptor_t s_files_descriptors[] = {
     {
         .id = "read_file",
@@ -1388,6 +1710,16 @@ static const claw_cap_descriptor_t s_files_descriptors[] = {
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path under a writable directory\"},\"edits\":{\"type\":\"array\",\"description\":\"Replacements to apply in order\",\"items\":{\"type\":\"object\",\"properties\":{\"old_text\":{\"type\":\"string\",\"description\":\"Exact existing text, must match exactly once\"},\"new_text\":{\"type\":\"string\",\"description\":\"Replacement text\"}},\"required\":[\"old_text\",\"new_text\"]}}},\"required\":[\"path\",\"edits\"]}",
         .execute = cap_files_edit_file_execute,
+    },
+    {
+        .id = "restore_file",
+        .name = "restore_file",
+        .family = "files",
+        .description = "Restore a previously saved version of a file. write_file and edit_file save the previous content automatically; omit version for the latest.",
+        .kind = CLAW_CAP_KIND_CALLABLE,
+        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path under a writable directory\"},\"version\":{\"type\":\"integer\",\"description\":\"Optional; default is the latest saved version\"}},\"required\":[\"path\"]}",
+        .execute = cap_files_restore_file_execute,
     },
     {
         .id = "delete_file",

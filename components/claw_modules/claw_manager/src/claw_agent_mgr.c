@@ -34,12 +34,14 @@ static const char *TAG = "claw_agent_mgr";
 #define CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS 1000
 #define CLAW_AGENT_MGR_NOTIFY_RETRY_DELAY_MS    200
 #define CLAW_AGENT_MGR_REAPER_PERIOD_MS         15000
-/* stuck-window (added): the window must EXCEED the configured LLM timeout,
- * otherwise a legitimately slow model call is misreported as a wedge. Observed
- * on device: a 300 s llm_timeout_ms against the old fixed 150 s threshold made
- * the reaper fire on subagents that were merely waiting on the model. */
-#define CLAW_AGENT_MGR_REAPER_STUCK_MARGIN_MS   60000
-#define CLAW_AGENT_MGR_REAPER_DEFAULT_LLM_MS    120000
+/* stuck-window (added): only an IDLE loop phase while the agent is still marked
+ * RUNNING is unambiguous evidence of a wedge. A working agent is always in some
+ * other phase (building context / calling the model / running a tool), and any of
+ * those can legitimately block for a long time - on device a long tool phase was
+ * misreported as stuck by the old phase-agnostic timer. A turn that really ended
+ * clears RUNNING through the completion observer, so RUNNING+IDLE means the turn
+ * never reported back (crashed task, dropped request). */
+#define CLAW_AGENT_MGR_REAPER_IDLE_STUCK_MS     120000
 #define CLAW_AGENT_MGR_REAPER_TASK_STACK        4096
 #define CLAW_AGENT_MGR_REAPER_TASK_PRIO         4
 
@@ -940,22 +942,10 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
  * tool, a wedged HTTP call, a stack fault) never reaches one, so its parent would
  * wait forever. This sweep detects "running but the loop has been idle for a
  * while" and reports it to the parent once, then marks the agent failed. */
-/* stuck-window (added): derive the wedge threshold from the configured LLM
- * timeout so a legitimately slow model call is never reported as stuck. */
-static uint32_t claw_agent_mgr_reaper_stuck_ms(void)
-{
-    uint32_t timeout = s_mgr.core_config.timeout_ms;
-
-    if (timeout == 0) {
-        timeout = CLAW_AGENT_MGR_REAPER_DEFAULT_LLM_MS;
-    }
-    return timeout + CLAW_AGENT_MGR_REAPER_STUCK_MARGIN_MS;
-}
-
 static void claw_agent_mgr_reap_stuck_once(void)
 {
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    uint32_t stuck_ms = claw_agent_mgr_reaper_stuck_ms();
+    uint32_t stuck_ms = CLAW_AGENT_MGR_REAPER_IDLE_STUCK_MS;
 
     for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
         claw_agent_mgr_parent_route_t route;
@@ -978,8 +968,9 @@ static void claw_agent_mgr_reap_stuck_once(void)
                 retry_pending = true;
             }
 
-            /* 2) Detect a wedge: the loop phase has not advanced for far longer
-             * than any legitimate single step (a slow LLM call is ~120 s). */
+            /* 2) Detect a wedge: the loop is IDLE while the agent is still marked
+             * RUNNING, i.e. the turn never reported back. Any other phase means
+             * work is in flight and must not be treated as stuck. */
             if (eligible && !retry_pending &&
                     agent->status == CLAW_AGENT_MGR_STATUS_RUNNING && agent->core) {
                 claw_core_agent_loop_phase_t phase = claw_core_get_agent_loop_phase(agent->core);
@@ -987,17 +978,18 @@ static void claw_agent_mgr_reap_stuck_once(void)
                 if (phase != agent->last_phase) {
                     agent->last_phase = phase;
                     agent->phase_since_ms = now_ms;
-                } else if (!agent->stuck_reported &&
+                } else if (phase == CLAW_CORE_AGENT_LOOP_PHASE_IDLE &&
+                           !agent->stuck_reported &&
                            (uint32_t)(now_ms - agent->phase_since_ms) > stuck_ms) {
                     agent->stuck_reported = true;
                     agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
                     snprintf(agent->last_error, sizeof(agent->last_error),
-                             "no progress for ~%u s", (unsigned)(stuck_ms / 1000));
+                             "idle for ~%u s while running", (unsigned)(stuck_ms / 1000));
                     snprintf(text, sizeof(text),
                              "<subagent_stuck agent_id=\"%s\">No progress for ~%u s: the subagent is still "
-                             "marked running but its loop has not advanced, so it likely crashed or wedged. "
-                             "inspect_agent shows its last_error. Resume it with send_agent_followup, or "
-                             "close_agent to stop it and finish the work yourself.</subagent_stuck>",
+                             "marked running but its loop is idle, so its turn never reported back (it likely "
+                             "crashed or dropped the request). inspect_agent shows its last_error. Resume it with "
+                             "send_agent_followup, or close_agent to stop it and finish the work yourself.</subagent_stuck>",
                              agent->agent_id, (unsigned)(stuck_ms / 1000));
                     claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
                     do_notify = true;

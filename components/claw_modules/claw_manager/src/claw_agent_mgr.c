@@ -63,6 +63,9 @@ static const char *CLAW_AGENT_MGR_DEFAULT_SUBAGENT_SYSTEM_PROMPT =
 static const char *CLAW_AGENT_MGR_PROMPT_STACK_FMT =
     "%s\n\n# %s Role\n%s\n\n# %s Type\n%s\n\nSelected agent_type: %s";
 
+/* sub-agent types (added): three real types, each a capability boundary enforced
+ * in claw_cap (recon cannot write or run scripts; verify cannot write). The
+ * generic "subagent" stays as the default for an unspecified type. */
 static const claw_agent_mgr_subagent_type_prompt_t s_default_subagent_type_prompts[] = {
     {
         .agent_type = "subagent",
@@ -70,30 +73,22 @@ static const claw_agent_mgr_subagent_type_prompt_t s_default_subagent_type_promp
                          "and return the useful result.",
     },
     {
-        .agent_type = "research",
-        .system_prompt = "Agent type: research. Prioritize investigation, source/context gathering, "
-                         "and concise synthesis. Do not make code changes unless the delegated task "
-                         "explicitly asks for them.",
+        .agent_type = "recon",
+        .system_prompt = "Agent type: recon. Investigate only: search and read to answer the question. "
+                         "You cannot modify files or run scripts. Return findings with concrete file:line "
+                         "evidence, and say what you could not determine.",
     },
     {
-        .agent_type = "coding",
-        .system_prompt = "Agent type: coding. Prioritize implementation details, affected files, "
-                         "focused fixes, and verification. Keep changes scoped to the delegated task.",
+        .agent_type = "build",
+        .system_prompt = "Agent type: build. Implement the change: locate with grep_files, read the exact "
+                         "window, change with edit_file (small diffs), then verify on the device. Return "
+                         "what changed, which files, and the verification result.",
     },
     {
-        .agent_type = "worker",
-        .system_prompt = "Agent type: coding. Prioritize implementation details, affected files, "
-                         "focused fixes, and verification. Keep changes scoped to the delegated task.",
-    },
-    {
-        .agent_type = "debug",
-        .system_prompt = "Agent type: debug. Prioritize reproducing symptoms, isolating root cause, "
-                         "and proposing the smallest defensible fix with verification steps.",
-    },
-    {
-        .agent_type = "debugger",
-        .system_prompt = "Agent type: debug. Prioritize reproducing symptoms, isolating root cause, "
-                         "and proposing the smallest defensible fix with verification steps.",
+        .agent_type = "verify",
+        .system_prompt = "Agent type: verify. Check a claim by reading, searching and running things. You "
+                         "cannot modify files, so you cannot 'fix' the thing under test. Return the "
+                         "evidence and whether the claim holds.",
     },
 };
 
@@ -1206,7 +1201,10 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
     err = claw_agent_mgr_start_subagent_locked(agent);
     if (err == ESP_OK) {
         request.request_id = claw_agent_mgr_next_request_id_locked();
-        request.flags = CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE;
+        /* sub-agent visibility (added): publish the subagent's per-round stage
+         * messages too, so a long delegation is observable instead of silent. */
+        request.flags = CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE |
+                        CLAW_CORE_REQUEST_FLAG_PUBLISH_STAGE_MESSAGE;
         request.session_id = agent->session_id;
         request.user_text = prompt;
         request.source_channel = parent_ctx->channel;

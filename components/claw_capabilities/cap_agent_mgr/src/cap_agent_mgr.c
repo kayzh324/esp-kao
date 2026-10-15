@@ -371,7 +371,7 @@ static const claw_cap_descriptor_t s_agent_mgr_caps[] = {
         .description = "Spawn an asynchronous subagent from an explicit prompt.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM | CLAW_CAP_FLAG_ROOT_AGENT_ONLY,
-        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"agent_type\":{\"type\":\"string\"},\"background\":{\"type\":\"boolean\"}},\"required\":[\"prompt\"]}",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"The full task definition for the subagent\"},\"agent_type\":{\"type\":\"string\",\"enum\":[\"recon\",\"build\",\"verify\",\"subagent\"],\"description\":\"recon = investigate only (cannot write or run scripts); build = implement changes; verify = check a claim without modifying files\"},\"background\":{\"type\":\"boolean\"}},\"required\":[\"prompt\"]}",
         .execute = cap_agent_mgr_spawn_execute,
     },
     {

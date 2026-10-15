@@ -128,3 +128,9 @@ CONFIG_PIX_CVT_YUV_TO_RGB565_SUPPORT=n
 CONFIG_PIX_CVT_YUV_TO_GRAY_SUPPORT=n
 CONFIG_PIX_CVT_YUV_TO_HSV_SUPPORT=n
 CONFIG_PIX_CVT_YUV_TO_YUV_SUPPORT=n
+
+# tiny_ttf kerning cache disabled (added): the LVGL kerning cache crashes with a
+# null-pointer load inside tiny_ttf_kerning_cache_compare_cb while drawing a
+# label (EXCVADDR 0x0). With a cache size of 0 LVGL computes kerning directly
+# instead of going through that cache (see the "No cache" branch in lv_tiny_ttf.c).
+CONFIG_LV_TINY_TTF_CACHE_KERNING_CNT=0

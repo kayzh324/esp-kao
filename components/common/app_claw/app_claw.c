@@ -536,7 +536,11 @@ esp_err_t app_claw_ui_start(void)
 /* agent-monitor (added): subagent states for the local web UI's status lights. */
 esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, size_t out_json_size)
 {
-    claw_agent_mgr_agent_info_t infos[8];
+    /* Heap, not stack: one agent_info_t is ~850 bytes (three 256-byte ids), so a
+     * small array overflows the caller's task stack (httpd runs with 8 KB; a
+     * stack array here corrupted the HTTP server and crashed it). */
+    claw_agent_mgr_agent_info_t *infos = NULL;
+    const size_t max_infos = 8;
     size_t count = 0;
     size_t used;
     int written;
@@ -547,9 +551,22 @@ esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, s
     }
     out_json[0] = '\0';
 
-    err = claw_agent_mgr_agent_snapshot(chat_id_filter, infos, sizeof(infos) / sizeof(infos[0]), &count);
+    infos = calloc(max_infos, sizeof(*infos));
+    if (!infos) {
+        snprintf(out_json, out_json_size, "{\"ok\":false,\"error\":\"out_of_memory\"}");
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = claw_agent_mgr_agent_snapshot(chat_id_filter, infos, max_infos, &count);
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* Manager not up yet (early boot): report "no agents" rather than an error. */
+        snprintf(out_json, out_json_size, "{\"ok\":true,\"agents\":[]}");
+        free(infos);
+        return ESP_OK;
+    }
     if (err != ESP_OK) {
         snprintf(out_json, out_json_size, "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        free(infos);
         return err;
     }
 
@@ -589,6 +606,7 @@ esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, s
     }
 
     snprintf(out_json + used, out_json_size - used, "]}");
+    free(infos);
     return ESP_OK;
 }
 

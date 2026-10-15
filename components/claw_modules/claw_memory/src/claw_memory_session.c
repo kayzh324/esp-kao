@@ -1123,12 +1123,21 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
             goto cleanup;
         }
 
-        /* reasoning-content (added): do NOT strip reasoning_content here. The
-         * upstream provider requires the model's reasoning to be passed back with
-         * replayed assistant turns in thinking mode; removing it makes the API
-         * reject the request with HTTP 400 ("reasoning_content ... must be passed
-         * back to the API"). Context size is bounded by session projection and the
-         * in-turn window instead. */
+        /* reasoning-content (added): the upstream provider requires EVERY replayed
+         * assistant turn to carry a reasoning_content field in thinking mode, even
+         * when the model produced no reasoning. A stored turn can lack the field
+         * either because the provider omitted it, or because an earlier build
+         * stripped it; either way the request is rejected with HTTP 400
+         * ("reasoning_content ... must be passed back to the API"). Normalize it
+         * to an empty string rather than dropping or inventing content. */
+        {
+            const cJSON *role = cJSON_GetObjectItemCaseSensitive(record, "role");
+
+            if (cJSON_IsString(role) && strcmp(role->valuestring, "assistant") == 0 &&
+                    !cJSON_GetObjectItemCaseSensitive(record, "reasoning_content")) {
+                cJSON_AddStringToObject(record, "reasoning_content", "");
+            }
+        }
 
         if (session_history_backend_mismatch(entry->backend_format)) {
             if (type == CLAW_CORE_CONTEXT_RECORD_ASSISTANT_TOOL ||

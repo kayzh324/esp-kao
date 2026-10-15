@@ -101,7 +101,22 @@ static esp_err_t cap_agent_mgr_spawn_execute(const char *input_json,
     cJSON_Delete(root);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "spawn_agent failed: %s", esp_err_to_name(err));
-        snprintf(output, output_size, "Error: spawn_agent failed: %s", esp_err_to_name(err));
+        /* admission-rejection (added): the manager refuses a spawn that would starve
+         * the device, so turn the terse error into the correction the model should
+         * apply on the next attempt rather than a bare failure it may retry blindly. */
+        if (err == ESP_ERR_INVALID_SIZE) {
+            snprintf(output, output_size,
+                     "Error: prompt too long (%d bytes max). Write the full spec to a file with "
+                     "write_file, then spawn with a short prompt: the goal, that file path, and the "
+                     "done-condition. Delegate one bounded step at a time.",
+                     CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES);
+        } else if (err == ESP_ERR_NO_MEM) {
+            snprintf(output, output_size,
+                     "Error: not enough internal memory to start a subagent right now. Do this step "
+                     "yourself, or free memory (close a finished subagent) and retry.");
+        } else {
+            snprintf(output, output_size, "Error: spawn_agent failed: %s", esp_err_to_name(err));
+        }
         return err;
     }
 
@@ -368,10 +383,10 @@ static const claw_cap_descriptor_t s_agent_mgr_caps[] = {
         .id = "spawn_agent",
         .name = "spawn_agent",
         .family = "agent_mgr",
-        .description = "Spawn an asynchronous subagent from an explicit prompt.",
+        .description = "Spawn an asynchronous subagent from a short, bounded prompt.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM | CLAW_CAP_FLAG_ROOT_AGENT_ONLY,
-        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"The full task definition for the subagent\"},\"agent_type\":{\"type\":\"string\",\"enum\":[\"recon\",\"build\",\"verify\",\"subagent\"],\"description\":\"recon = investigate only (cannot write or run scripts); build = implement changes; verify = check a claim without modifying files\"},\"background\":{\"type\":\"boolean\"}},\"required\":[\"prompt\"]}",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Short bounded task: goal, exact file path(s), done-condition (<=2000 bytes). Put any long spec in a file first and pass its path.\"},\"agent_type\":{\"type\":\"string\",\"enum\":[\"recon\",\"build\",\"verify\",\"subagent\"],\"description\":\"recon = investigate only (cannot write or run scripts); build = implement changes; verify = check a claim without modifying files\"},\"background\":{\"type\":\"boolean\"}},\"required\":[\"prompt\"]}",
         .execute = cap_agent_mgr_spawn_execute,
     },
     {

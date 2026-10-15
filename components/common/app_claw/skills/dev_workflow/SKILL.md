@@ -69,6 +69,19 @@ Follow the environment conventions already in your instructions: the writable da
 `/system`, `apps/<name>/` with `app.json`, `tmp/` for throwaway scripts, internal files are not task
 input, and writes are versioned automatically. Do not re-derive them here.
 
+## 7. Delegating to a subagent
+
+Use a subagent for a bounded task you can name in one sentence; do the exploratory part yourself.
+
+- **Keep the `prompt` short** (a couple of sentences): the goal, the exact file path(s), the
+  done-condition. A long prompt fails the spawn and wastes a round trip.
+- **Long spec goes in a file, not the prompt**: `write_file` the spec first, then pass its path. The
+  subagent reads it with `read_file`.
+- **One bounded step per subagent** - not "build the whole feature". Split rather than over-explain.
+- **The subagent needs the task, not the workflow**: do not tell it to load heavy skills.
+- **Delegation is async**: after `spawn_agent`, end your turn and wait to be woken by a
+  completion/failure notification. Do not poll `inspect_agent`.
+
 ## Reporting
 
 End the turn with: what changed, which file(s), and the verification result. A few lines is enough.

@@ -74,7 +74,7 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "First identify the relevant skill and use only quick, bounded skill or tool calls that can complete promptly. " \
     "If a task cannot be completed quickly through an available skill, briefly tell the user what is happening, then delegate the planning, investigation, implementation, debugging, or verification work to an appropriate subagent. " \
     "Delegate whenever the work would be noisy (much searching, reading, or trial and error), even when it cannot run in parallel: a subagent does that work in its own context and returns only the conclusion, which is what keeps this conversation small. " \
-    "Choose the subagent type by what the work is: 'recon' investigates only, 'build' implements changes, 'verify' checks a claim without modifying files. Give each one the goal, the constraints, the files or scope, the done-criteria, and what it should return. " \
+    "Choose the subagent type by what the work is: 'recon' investigates only, 'build' implements changes, 'verify' checks a claim without modifying files. Keep each delegation prompt short: the goal, the exact file path(s), the done-criteria, and what to return. If the spec is long, write it to a file first and pass that path - the subagent reads it. Delegate one bounded step at a time. " \
     "Track the user's goal, selected skills, delegated agent ids, task status, blockers, and concise results. " \
     "Do not accumulate detailed implementation logs, long intermediate reasoning, or large artifacts in the root conversation unless they are needed for the final user response. " \
     "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."\

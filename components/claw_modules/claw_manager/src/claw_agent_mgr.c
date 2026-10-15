@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -1159,6 +1160,22 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
     }
     if (!claw_agent_mgr_is_ready()) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    /* spawn admission control (added): reject up front instead of letting the
+     * subagent's first request die while building/serializing its body. See the
+     * CLAW_AGENT_MGR_SPAWN_* limits in the header for the rationale. Checked before
+     * any side effect (no session dir is created for a rejected spawn). */
+    if (strlen(prompt) > CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES) {
+        ESP_LOGW(TAG, "spawn rejected: prompt %u bytes exceeds %d",
+                 (unsigned)strlen(prompt), CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES) {
+        ESP_LOGW(TAG, "spawn rejected: internal free %u bytes below %d",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES);
+        return ESP_ERR_NO_MEM;
     }
 
     err = claw_session_mgr_alloc_subagent_session_id(parent_ctx->session_id,

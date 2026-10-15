@@ -20,6 +20,14 @@ extern "C" {
 
 #define CLAW_AGENT_MGR_ROOT_AGENT_ID "0"
 
+/* Subagent admission limits (added): an oversized spawn prompt or a low internal
+ * heap makes the subagent's very FIRST request fail while building/serializing
+ * the body ("Out of memory serializing request"), which then costs a failure
+ * notification plus a re-plan. Refusing up front, with an actionable message, is
+ * much cheaper than spawn-fail-diagnose-retry. */
+#define CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES 2000
+#define CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES (64 * 1024)
+
 typedef enum {
     CLAW_AGENT_MGR_STATUS_EMPTY = 0,
     CLAW_AGENT_MGR_STATUS_RUNNING,

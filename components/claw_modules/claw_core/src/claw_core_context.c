@@ -327,6 +327,17 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
         return tool_output;
     }
 
+    /* tool-result spill: do NOT spill results that are meant to be consumed
+     * inline. read_file already pages its own output, and activate_skill exists
+     * precisely to hand the model the skill document. More importantly, a spilled
+     * read_file result is re-read by the model with read_file, whose result would
+     * spill again - an unbounded read -> spill -> read loop (observed on device:
+     * the agent re-reading /sdcard/.toolout/*.txt and thrashing). */
+    if (tool_name && (strcmp(tool_name, "read_file") == 0 ||
+                      strcmp(tool_name, "activate_skill") == 0)) {
+        return tool_output;
+    }
+
     if (claw_paths_join(CLAW_PATH_DATA, CLAW_CORE_TOOL_RESULT_SPILL_SUBDIR, dir, sizeof(dir)) != ESP_OK) {
         return tool_output;
     }

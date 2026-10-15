@@ -1877,6 +1877,18 @@ static esp_err_t session_history_compact_if_needed(const char *session_id,
     claw_memory_session_index_t index = {0};
     esp_err_t err;
 
+    /* session-projection (added): RETIRED. This mechanical >300KB compaction
+     * rewrote the file and DROPPED older tool records, which shifted record
+     * indices and invalidated the summary record's keep_from pointer, and it
+     * could mark the session .blocked and kill it outright (12 such files exist
+     * on the device). Session projection now bounds replay instead, so this is a
+     * no-op; the code below is kept for reference. */
+    (void)session_id;
+    (void)request;
+    (void)data_path;
+    (void)idx_path;
+    return ESP_OK;
+
     if (!session_id || !data_path || !idx_path) {
         return ESP_ERR_INVALID_ARG;
     }

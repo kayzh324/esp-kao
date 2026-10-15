@@ -61,6 +61,43 @@ static char *dup_printf(const char *fmt, ...)
     return buf;
 }
 
+/* utf8-scan (added): true when body is already well-formed UTF-8, i.e. the
+ * sanitizer would not change a single byte. Lets the caller skip allocating a
+ * second full-size copy of an already large request body. */
+static bool utf8_body_is_valid(const char *body)
+{
+    size_t i = 0;
+
+    if (!body) {
+        return false;
+    }
+    while (body[i]) {
+        unsigned char c = (unsigned char)body[i];
+        size_t need;
+
+        if (c < 0x80) {
+            i++;
+            continue;
+        }
+        if (c >= 0xC2 && c <= 0xDF) {
+            need = 1;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            need = 2;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            need = 3;
+        } else {
+            return false;
+        }
+        for (size_t k = 1; k <= need; k++) {
+            if (body[i + k] == '\0' || ((unsigned char)body[i + k] & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        i += need + 1;
+    }
+    return true;
+}
+
 static char *sanitize_utf8_body_copy(const char *body)
 {
     size_t src = 0;
@@ -266,7 +303,8 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
     esp_http_client_config_t config = {0};
     esp_http_client_handle_t client = NULL;
     char *auth_header_value = NULL;
-    char *sanitized_body = NULL;
+    char *owned_body = NULL;
+    const char *body_to_send = NULL;
     int status_code = 0;
     esp_err_t err;
 
@@ -280,11 +318,19 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
         return ESP_ERR_INVALID_ARG;
     }
 
-    sanitized_body = sanitize_utf8_body_copy(request->body);
-    if (!sanitized_body) {
-        *out_error_message = dup_printf("Out of memory sanitizing HTTP request body");
-        ESP_LOGE(TAG, "OOM sanitizing HTTP request body");
-        return ESP_ERR_NO_MEM;
+    /* utf8-sanitize (added): only allocate a sanitized copy when the body really
+     * contains invalid UTF-8. An already-valid body (the common case) is sent in
+     * place, which avoids a second full-size allocation of a large request. */
+    if (utf8_body_is_valid(request->body)) {
+        body_to_send = request->body;
+    } else {
+        owned_body = sanitize_utf8_body_copy(request->body);
+        if (!owned_body) {
+            *out_error_message = dup_printf("Out of memory sanitizing HTTP request body");
+            ESP_LOGE(TAG, "OOM sanitizing HTTP request body");
+            return ESP_ERR_NO_MEM;
+        }
+        body_to_send = owned_body;
     }
 
     err = response_buffer_init(&buffer);
@@ -333,7 +379,7 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
             esp_http_client_set_header(client, header->name, header->value);
         }
     }
-    esp_http_client_set_post_field(client, sanitized_body, (int)strlen(sanitized_body));
+    esp_http_client_set_post_field(client, body_to_send, (int)strlen(body_to_send));
 
     ESP_LOGD(TAG, "POST %s", request->url);
     err = esp_http_client_perform(client);
@@ -371,7 +417,7 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
 
 cleanup:
     free(auth_header_value);
-    free(sanitized_body);
+    free(owned_body);
     if (client) {
         esp_http_client_cleanup(client);
     }

@@ -191,6 +191,9 @@ esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,
                                                  char *tool_summary,
                                                  size_t tool_summary_size,
                                                  char **out_tool_results_json);
+/* in-turn window (added): shrink old tool rounds in runtime_messages so a long
+ * turn's request body stays bounded. Full content remains in the session. */
+void claw_core_trim_runtime_messages(cJSON *runtime_messages);
 void claw_core_finish_from_plain_text(uint32_t request_id,
                                       const claw_core_llm_response_t *llm_response,
                                       claw_core_response_t *response);

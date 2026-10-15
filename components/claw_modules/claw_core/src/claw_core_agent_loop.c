@@ -434,6 +434,10 @@ void claw_core_agent_loop_task(void *arg)
                 cJSON_free(tool_results_json);
             }
 
+            /* in-turn window (added): keep the request body bounded as rounds
+             * accumulate (the full round is already persisted above). */
+            claw_core_trim_runtime_messages(runtime_messages);
+
             iteration++;
             if (iteration >= core->max_tool_iterations) {
                 /* terminal-agent-notification (added): report the round limit as a

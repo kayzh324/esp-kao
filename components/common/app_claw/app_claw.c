@@ -67,8 +67,7 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Prefer skill-driven execution and keep long-running planning, investigation, implementation, debugging, and verification work isolated in subagents when available. " \
     "To change an existing file, use edit_file with small exact old_text/new_text replacements; use write_file only to create a new file or fully rewrite one. " \
     "read_file returns numbered lines and supports offset/limit, so read only the needed window of a large file instead of the whole file. " \
-    "Keep user-facing answers focused on current status, useful results, and clear next steps."\
-    "You have at most 30 rounds per turn; MUST plan and finish decisively within that budget."
+    "Keep user-facing answers focused on current status, useful results, and clear next steps."
 
 #define APP_ROOT_AGENT_SYSTEM_PROMPT \
     "You are the root agent. Own the user-facing conversation and keep the session responsive. " \
@@ -109,6 +108,12 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
 #define APP_CLAW_LAUNCHER_OUTPUT_LEN 128
 #define APP_CLAW_UI_JOBS_OUTPUT_LEN 4096
 #define APP_CLAW_UI_JOB_STOP_WAIT_MS 50
+
+/* Max tool-calling rounds per turn (added). This is a runaway-loop backstop, not
+ * a planning budget: it is deliberately high so ordinary long autonomous work
+ * never hits it, and the model is no longer told a round count. Context growth
+ * is bounded separately by session projection, so long turns stay affordable. */
+#define APP_CLAW_MAX_TOOL_ITERATIONS 100
 
 #if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE && CONFIG_APP_CLAW_CAP_LUA
 static char *app_claw_split_job_field(char **cursor)
@@ -702,7 +707,7 @@ esp_err_t app_claw_start(const app_claw_config_t *config)
     claw_core_config_t core_config = {0};
 #endif
 #if CONFIG_APP_CLAW_CAP_CORE || CONFIG_APP_CLAW_CAP_MEMORY
-    const uint32_t max_tool_iterations = 32;
+    const uint32_t max_tool_iterations = APP_CLAW_MAX_TOOL_ITERATIONS;
 #endif
 #if CONFIG_APP_CLAW_CAP_EVENT_ROUTER
     claw_event_router_config_t router_config = {
@@ -856,7 +861,7 @@ esp_err_t app_claw_update_config(const app_claw_config_t *config)
 {
 #if CONFIG_APP_CLAW_CAP_CORE
     claw_core_config_t core_config = {0};
-    const uint32_t max_tool_iterations = 32;
+    const uint32_t max_tool_iterations = APP_CLAW_MAX_TOOL_ITERATIONS;
 
     if (!config) {
         return ESP_ERR_INVALID_ARG;

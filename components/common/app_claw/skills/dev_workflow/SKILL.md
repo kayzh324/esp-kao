@@ -42,18 +42,11 @@ it, or for running an existing script once.
 - For UI work the evidence is what appears on the panel.
 - Report intent and verification separately: what you *changed* vs what you *verified*.
 
-## 5. Where files go
+## 5. Environment
 
-- A program lives in `<data_root>/apps/<name>/` with `main.lua` and `app.json` (`app.json` is what makes
-  a directory an app).
-- Throwaway scripts go in `<data_root>/tmp/`.
-- Build paths with `storage.get_root_dir()` + `storage.join_path(...)`; never hardcode `/fatfs`.
-- Keep an app's state inside that app's own `data/`; do not leave loose files in the root.
-
-## 6. Do not use internal files as input
-
-- `sessions/*.log`, `memory_records.jsonl`, `memory_index.json` and `MEMORY.md` are the agent's own
-  plumbing, not task material. Do not read them to decide what to do.
+Follow the environment conventions already in your instructions: the writable data root vs read-only
+`/system`, `apps/<name>/` with `app.json`, `tmp/` for throwaway scripts, internal files are not task
+input, and writes are versioned automatically. Do not re-derive them here.
 
 ## Reporting
 

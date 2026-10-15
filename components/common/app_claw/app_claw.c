@@ -103,8 +103,22 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
 #define APP_SYSTEM_PROMPT_SUFFIX "\n"
 #endif
 
+/* always-on conventions (added): invariants that must not depend on the model
+ * choosing to load a skill. Task-shaped know-how stays in skills; these do not. */
+#define APP_SYSTEM_PROMPT_CONVENTIONS \
+    "Environment conventions: " \
+    "the writable data root is storage.get_root_dir() and /system is read-only; build paths with " \
+    "storage.get_root_dir() + storage.join_path(...) and never hardcode /fatfs. " \
+    "A program lives in <data_root>/apps/<name>/ with main.lua and app.json (app.json is what makes a " \
+    "directory an app); throwaway scripts go in <data_root>/tmp/. " \
+    "Do not read sessions/*.log, memory_records.jsonl, memory_index.json or MEMORY.md as task input - " \
+    "they are the agent's own plumbing, not task material. " \
+    "Do not keep your own backup copies: write_file and edit_file save the previous version automatically " \
+    "and report its path, and restore_file brings it back. "
+
 #define APP_SYSTEM_PROMPT \
     APP_SYSTEM_PROMPT_COMMON \
+    APP_SYSTEM_PROMPT_CONVENTIONS \
     APP_SYSTEM_PROMPT_SUFFIX
 
 #define APP_CLAW_LAUNCHER_OUTPUT_LEN 128

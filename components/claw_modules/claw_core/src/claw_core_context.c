@@ -606,6 +606,50 @@ static int claw_core_newest_round_index(const cJSON *messages, size_t count)
     return -1;
 }
 
+/* instruction content vs data (added) -------------------------------------
+ * A skill activation is not a tool result in the same sense a file read is: it is
+ * instructions the model needs for the WHOLE task, and it is big (a skill file can
+ * be 19 KB, ~40% of the S3 window). A file read is data: dropping it costs one
+ * round to re-acquire, and re-reading is routine. The spill path already exempts
+ * these two by tool name (see claw_core_spill_tool_result); the window's omit path
+ * did not, so the largest and most reusable item in a turn was the first thing
+ * thrown away - which is exactly "forget the instructions, then drift".
+ *
+ * Identified via the producing tool call rather than by sniffing the text, so it
+ * keeps working if the tool is renamed or the content format changes.
+ * ------------------------------------------------------------------------- */
+#define CLAW_CORE_INSTRUCTION_TOOL "activate_skill"
+
+static bool claw_core_is_instruction_result(const cJSON *messages, const cJSON *message)
+{
+    const cJSON *id;
+    const cJSON *probe = NULL;
+
+    if (!cJSON_IsArray(messages) || !cJSON_IsObject(message)) {
+        return false;
+    }
+    id = cJSON_GetObjectItemCaseSensitive(message, "tool_call_id");
+    if (!cJSON_IsString(id) || !id->valuestring || !id->valuestring[0]) {
+        return false;
+    }
+    cJSON_ArrayForEach(probe, messages) {
+        const cJSON *calls = cJSON_GetObjectItemCaseSensitive(probe, "tool_calls");
+        const cJSON *call = NULL;
+
+        cJSON_ArrayForEach(call, calls) {
+            const cJSON *fn = cJSON_GetObjectItemCaseSensitive(call, "function");
+            const cJSON *cid = cJSON_GetObjectItemCaseSensitive(call, "id");
+            const cJSON *name = fn ? cJSON_GetObjectItemCaseSensitive(fn, "name") : NULL;
+
+            if (cJSON_IsString(cid) && cid->valuestring && cJSON_IsString(name) &&
+                    name->valuestring && strcmp(cid->valuestring, id->valuestring) == 0) {
+                return strcmp(name->valuestring, CLAW_CORE_INSTRUCTION_TOOL) == 0;
+            }
+        }
+    }
+    return false;
+}
+
 /* in-turn window (added): runtime_messages accumulates every tool round and the
  * whole array is re-sent on each iteration, so a long turn grows the request
  * body without bound. Trim ONLY when the accumulated bytes exceed the budget.
@@ -707,6 +751,13 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t
                 }
             } else if (seen_rounds == 0) {
                 continue;  /* messages before the first tool round (e.g. the user) */
+            }
+
+            /* Instructions outrank data (added): never omit a skill activation. It
+             * is the largest item in a turn and the model needs it throughout, while
+             * a file read is one round away from being recovered. */
+            if (is_tool_result && claw_core_is_instruction_result(runtime_messages, message)) {
+                continue;
             }
 
             before = claw_core_message_bytes(message);

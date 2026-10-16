@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -56,6 +57,59 @@ static const char *TAG = "cap_files";
 #define CAP_FILES_VERSIONS_DIRNAME ".versions"
 #define CAP_FILES_VERSIONS_KEEP 5
 #define CAP_FILES_VERSION_PATH_MAX 320
+
+/* Size guidance (added): a file that eats a large share of the per-round context
+ * is expensive on EVERY read, and re-reads dominate long tasks - measured on one
+ * real task, a 12 KB main.lua was re-read 23 times and a 9 KB spec 13 times, with
+ * the task's inputs very nearly filling the window on their own. So the write tools
+ * report the cost in the unit that actually matters (fraction of one round) at the
+ * moment the file is created - which is when splitting is still cheap.
+ *
+ * A hint, never a refusal: whether to split is an engineering judgement, but it
+ * should be made with the number in hand. The thresholds are fractions of the
+ * window, so on a bigger module the same file stops being flagged. */
+static bool cap_files_is_source_path(const char *path)
+{
+    static const char *const exts[] = {
+        ".lua", ".c", ".h", ".cpp", ".hpp", ".cc", ".py", ".js", ".ts", ".sh",
+    };
+    const char *dot = path ? strrchr(path, '.') : NULL;
+
+    if (!dot) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        if (strcasecmp(dot, exts[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void cap_files_append_size_hint(char *output, size_t output_size,
+                                       const char *path, size_t size)
+{
+    size_t guide = cap_files_is_source_path(path) ? CLAW_TIER_FILE_GUIDE_CODE_BYTES
+                                                  : CLAW_TIER_FILE_GUIDE_TEXT_BYTES;
+    size_t used;
+    unsigned pct;
+
+    if (!output || !path || size <= guide) {
+        return;
+    }
+    used = strlen(output);
+    if (used + 240 >= output_size) {
+        return;
+    }
+    pct = (unsigned)((size * 100) / CLAW_TIER_RUNTIME_BUDGET_BYTES);
+    snprintf(output + used, output_size - used,
+             "\nhint: %s is %u KB = ~%u%% of ONE round's context on this board (%u KB). "
+             "Reading it costs that much of your working set every time. If it has more than one "
+             "responsibility, split it by responsibility (aim <= %u KB per file).",
+             path, (unsigned)((size + 1023) / 1024), pct,
+             (unsigned)(CLAW_TIER_RUNTIME_BUDGET_BYTES / 1024),
+             (unsigned)(guide / 1024));
+}
 
 /* Sandbox roots are resolved from claw_paths on demand so cap_files always
  * follows the live mount points (flash vs SD for DATA). Writability is fixed
@@ -681,6 +735,7 @@ static esp_err_t cap_files_write_file_execute(const char *input_json,
     } else {
         snprintf(output, output_size, "OK: wrote %d bytes to %s (new file)", (int)written, resolved_path);
     }
+    cap_files_append_size_hint(output, output_size, resolved_path, (size_t)written);
     return ESP_OK;
 }
 
@@ -909,6 +964,7 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
     } else {
         snprintf(output, output_size, "OK: replaced %u edit(s) in %s", (unsigned)applied, resolved_path);
     }
+    cap_files_append_size_hint(output, output_size, resolved_path, strlen(content));
 
 done:
     free(content);

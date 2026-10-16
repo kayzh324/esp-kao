@@ -61,6 +61,14 @@ Rules:
 - The frontmatter must be wrapped by `---`.
 - The frontmatter must be valid JSON (a single JSON object).
 - `SKILL.md` must contain exactly one H1 heading.
+- **Size and structure (progressive disclosure).** Activating a skill loads the whole `SKILL.md` into
+  the agent's context, and that context is re-sent on every round, so an oversized skill is paid for
+  repeatedly. Keep `SKILL.md` to the index plus the rules that must always apply, and put detail
+  (reference tables, worked examples, per-peripheral notes, measured field notes) into files under
+  `references/` that the agent reads only when it needs them. Target: not more than about **one eighth**
+  of the board's per-round context budget, and never more than a third. This is guidance, not a
+  validation rule, but a skill that breaks it degrades every task that activates it - a 19 KB skill on
+  an S3 board is ~40% of one round's context.
 - `name` must be a non-empty string.
 - `name` must exactly match the parent directory name `skills/<skill_id>`.
 - `description` should briefly describe when to use the skill.

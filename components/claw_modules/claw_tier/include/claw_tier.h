@@ -45,6 +45,15 @@
 #define CLAW_TIER_CAP_FILES_MAX_FILE_SIZE        (128 * 1024)
 #define CLAW_TIER_CAP_FILES_EDIT_MAX_FILE_SIZE   (128 * 1024)
 #define CLAW_TIER_CAP_FILES_GREP_MAX_FILE_SIZE   (256 * 1024)
+/* Size guidance (added): not a limit - a hint the write tools report back. A file
+ * that is a large fraction of the window is expensive on EVERY read, and re-reads
+ * dominate long tasks, so the useful unit is "how much of one round's context does
+ * this file cost". Expressed as a fraction of the window so it widens on its own
+ * with a bigger chip. Source is the work product and gets the larger share.
+ * Measured example that set these: a 19 KB skill file = 40% of the S3 window, and
+ * a 12 KB main.lua re-read 23 times in one task. */
+#define CLAW_TIER_FILE_GUIDE_CODE_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 3)
+#define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (96 * 1024)
 #define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES     (384 * 1024)
 #define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (512 * 1024)
@@ -93,6 +102,15 @@
 #define CLAW_TIER_CAP_FILES_MAX_FILE_SIZE        (128 * 1024)
 #define CLAW_TIER_CAP_FILES_EDIT_MAX_FILE_SIZE   (128 * 1024)
 #define CLAW_TIER_CAP_FILES_GREP_MAX_FILE_SIZE   (256 * 1024)
+/* Size guidance (added): not a limit - a hint the write tools report back. A file
+ * that is a large fraction of the window is expensive on EVERY read, and re-reads
+ * dominate long tasks, so the useful unit is "how much of one round's context does
+ * this file cost". Expressed as a fraction of the window so it widens on its own
+ * with a bigger chip. Source is the work product and gets the larger share.
+ * Measured example that set these: a 19 KB skill file = 40% of the S3 window, and
+ * a 12 KB main.lua re-read 23 times in one task. */
+#define CLAW_TIER_FILE_GUIDE_CODE_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 3)
+#define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (96 * 1024)
 #define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES     (384 * 1024)
 #define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (512 * 1024)
@@ -140,6 +158,15 @@
 #define CLAW_TIER_CAP_FILES_MAX_FILE_SIZE        (32 * 1024)
 #define CLAW_TIER_CAP_FILES_EDIT_MAX_FILE_SIZE   (32 * 1024)
 #define CLAW_TIER_CAP_FILES_GREP_MAX_FILE_SIZE   (64 * 1024)
+/* Size guidance (added): not a limit - a hint the write tools report back. A file
+ * that is a large fraction of the window is expensive on EVERY read, and re-reads
+ * dominate long tasks, so the useful unit is "how much of one round's context does
+ * this file cost". Expressed as a fraction of the window so it widens on its own
+ * with a bigger chip. Source is the work product and gets the larger share.
+ * Measured example that set these: a 19 KB skill file = 40% of the S3 window, and
+ * a 12 KB main.lua re-read 23 times in one task. */
+#define CLAW_TIER_FILE_GUIDE_CODE_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 3)
+#define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (32 * 1024)
 #define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES     (96 * 1024)
 #define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (128 * 1024)

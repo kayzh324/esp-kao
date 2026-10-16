@@ -91,6 +91,23 @@ static const claw_agent_mgr_subagent_type_prompt_t s_default_subagent_type_promp
                          "cannot modify files, so you cannot 'fix' the thing under test. Return the "
                          "evidence and whether the claim holds.",
     },
+    {
+        /* bench (added): measurement is a different job from building, and doing it
+         * in the build agent's own context is what made a real task's round budget
+         * disappear - 39 of 116 rounds were spent launching and polling device jobs,
+         * and the job logs compete for the same window as the code and the spec.
+         * A bench agent keeps the harness and the raw logs in ITS context and hands
+         * back numbers, so the two working sets never have to fit at once. */
+        .agent_type = "bench",
+        .system_prompt = "Agent type: bench. You measure, you do not build. You own the measurement loop "
+                         "(launch the run, poll it, read the log) and you keep the harness and raw logs in "
+                         "your own session so the build agent never has to. Write your numbers into the "
+                         "task's BENCH.md (append a row per run: what was measured, the exact command, the "
+                         "numbers, the date) and return ONLY the numbers and the command - never a log dump. "
+                         "If you must change something to measure it, change only the benchmark harness, "
+                         "never the product code, and say so. Be reusable: the same bench agent is called "
+                         "again with a follow-up for the next measurement instead of a new one being spawned.",
+    },
 };
 
 typedef enum {

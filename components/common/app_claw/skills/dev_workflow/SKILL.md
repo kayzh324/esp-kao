@@ -45,22 +45,24 @@ it, or for running an existing script once.
 - For UI work the evidence is what appears on the panel.
 - Report intent and verification separately: what you *changed* vs what you *verified*.
 
-## 5. Multi-session programs keep three short docs
+## 5. Multi-session programs keep four short docs
 
 A one-off script (`tmp/`, run once) needs no docs. A **program** - multi-file, or worked on across
-sessions - keeps three short files in its own directory (`apps/<name>/`):
+sessions - keeps four short files in its own directory (`apps/<name>/`):
 
 | file | holds | size |
 | --- | --- | --- |
 | `REQ.md` | what the user wants | tens of lines |
 | `ARCH.md` | the files and who owns what | tens of lines |
 | `PROGRESS.md` | built / verified / todo / broken | append only |
+| `BENCH.md` | measured numbers: what was measured, the exact command, the number, the date | one row per run |
 
 Why: your context dies between sessions, the disk does not. One fact per line, no filler, no restating
-code, `A -> B` for relations.
+code, `A -> B` for relations. `BENCH.md` is what lets a build agent use a measurement without ever
+reading a log: it reads the row, not the raw output.
 
 - **Read budget per session**: the relevant `REQ.md` lines, the `ARCH.md` rows you will touch, the tail of
-  `PROGRESS.md`, and the one or two code files you will edit. Nothing else.
+  `PROGRESS.md`, the `BENCH.md` rows you need, and the one or two code files you will edit. Nothing else.
 - Do **not** write a plan document (`PLAN.md`, a design essay): every session would have to re-read it,
   and it costs more than it returns. Working state that changes minute to minute belongs in `pin_note`
   (see §8), not in a disk document.
@@ -98,6 +100,26 @@ work recoverable:
 - **Write drafts to a file, not to your reasoning.** A design or a 100-line function written out inside
   your reasoning is the first thing compaction drops - and then you re-derive it at full price. Put it in
   a working file with `write_file` as soon as it exists, then turn it into the real file with `edit_file`.
+
+## 9. Keep what you work on small enough to hold
+
+The whole conversation is re-sent every round, and one round's window on this board is small (the
+hardware tier sets it). So the size of a file is not a style question - it is the price of *every*
+read of it. Measured on a real task: a 12 KB source file was re-read 23 times and a 9 KB spec 13
+times, and the task's inputs alone very nearly filled the window, leaving no room to work.
+
+- **Source files**: aim for at most about a **third of your round budget** per file -
+  `write_file`/`edit_file` reports the actual number and what it costs. Split by responsibility: a file
+  that both draws the screen and drives the sensor is two files.
+- **Docs and specs** (`REQ` / `ARCH` / `PROGRESS` / `BENCH`): aim for about an **eighth**. These are
+  read far more often than they change, so density pays: one fact per line, no prose.
+- **Skills**: read only the part you need. When writing one, keep `SKILL.md` to the index plus the rules
+  that must always apply, and put the detail in `references/`. A 19 KB skill is 40% of the window and
+  gets re-activated repeatedly.
+- **Measure through a `bench` agent, not through yourself.** Launching a device run and reading its log
+  is a big, repeated loop. Hand it to ONE `bench` agent (reuse it with `send_agent_followup` for every
+  measurement in the task) and take back only the numbers, which it writes to `BENCH.md`. Your window
+  keeps the code and the spec; its window keeps the harness and the logs.
 
 ## Reporting
 

@@ -92,6 +92,20 @@ size_t claw_memory_text_buffer_size(size_t max_chars)
     return (max_chars * 4) + 1;
 }
 
+/* Auxiliary LLM calls (memory extraction, session compaction) must not present
+ * themselves upstream as the live conversation (added). The opencode-go backend
+ * turns the session id into an "x-opencode-session" header; reusing the business
+ * id lets the provider treat a summarization request as part of the user's own
+ * session. A distinct suffix keeps the two apart without changing the local
+ * session (the job still reads and writes the same session files). */
+char *claw_memory_aux_session_id_dup(const char *session_id, const char *tag)
+{
+    if (!session_id || !session_id[0]) {
+        return NULL;
+    }
+    return dup_printf("%s:%s", session_id, tag ? tag : "aux");
+}
+
 /* Read a whole small file into a heap string. Shared by the pinned-note path
  * (capability + provider) so both agree on the size cap and error semantics. */
 esp_err_t claw_memory_read_file_alloc(const char *path, size_t max_bytes, char **out_text)

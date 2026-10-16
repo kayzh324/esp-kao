@@ -80,6 +80,7 @@ size_t claw_memory_text_buffer_size(size_t max_chars);
 char *claw_memory_session_path_dup(const char *session_id);
 char *claw_memory_session_pinned_path_dup(const char *session_id);
 esp_err_t claw_memory_read_file_alloc(const char *path, size_t max_bytes, char **out_text);
+char *claw_memory_aux_session_id_dup(const char *session_id, const char *tag);
 void claw_memory_normalize_session_text(const char *src,
                                         char *dst,
                                         size_t dst_size,

@@ -2204,6 +2204,7 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
     char *user_prompt = NULL;
     char *system_prompt = NULL;
     char *summary_text = NULL;
+    char *aux_session_id = NULL;
     esp_err_t err;
 
     if (!session_id || !s_async_extract.runtime) {
@@ -2294,13 +2295,17 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
         goto done;
     }
 
+    /* Tagged so the provider does not read this summarization call as part of the
+     * user's live session (see claw_memory_aux_session_id_dup). */
+    aux_session_id = claw_memory_aux_session_id_dup(session_id, "compact");
+
     err = claw_llm_runtime_chat(s_async_extract.runtime,
                                 &(claw_llm_chat_request_t) {
                                     .system_prompt = system_prompt,
                                     .messages = messages,
                                     .tools_json = NULL,
                                     .abort_flag = NULL,
-                                    .session_id = session_id,
+                                    .session_id = aux_session_id,
                                 },
                                 &response,
                                 &error_message);
@@ -2356,6 +2361,7 @@ done:
     free(user_prompt);
     free(system_prompt);
     free(summary_text);
+    free(aux_session_id);
     free(transcript);
     free(prev_summary);
     session_history_index_free(&index);

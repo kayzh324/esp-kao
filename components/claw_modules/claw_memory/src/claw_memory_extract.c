@@ -45,6 +45,7 @@ static esp_err_t claw_memory_llm_chat_with_runtime(claw_llm_runtime_t *runtime,
     claw_llm_response_t response = {0};
     cJSON *messages = NULL;
     cJSON *user_msg = NULL;
+    char *aux_session_id = NULL;
     esp_err_t err;
 
     if (out_text) {
@@ -60,6 +61,9 @@ static esp_err_t claw_memory_llm_chat_with_runtime(claw_llm_runtime_t *runtime,
         *out_error_message = dup_printf("auto_extract requires an explicit runtime");
         return ESP_ERR_INVALID_ARG;
     }
+    /* NULL when there is no session (or on OOM): the call then simply carries no
+     * session header, which is always safe. */
+    aux_session_id = claw_memory_aux_session_id_dup(session_id, "mem");
 
     messages = cJSON_CreateArray();
     user_msg = cJSON_CreateObject();
@@ -84,12 +88,17 @@ static esp_err_t claw_memory_llm_chat_with_runtime(claw_llm_runtime_t *runtime,
                                      * borrowed session id for the
                                      * x-opencode-session header; ignored by
                                      * backends without session_header_name.
+                                     * Tagged "mem" so the provider cannot read
+                                     * this extraction as part of the live
+                                     * conversation (see
+                                     * claw_memory_aux_session_id_dup).
                                      */
-                                    .session_id = session_id,
+                                    .session_id = aux_session_id,
                                 },
                                 &response,
                                 out_error_message);
     cJSON_Delete(messages);
+    free(aux_session_id);
     if (err != ESP_OK) {
         claw_llm_response_free(&response);
         return err;

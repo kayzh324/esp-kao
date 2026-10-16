@@ -486,6 +486,57 @@ static void claw_core_shrink_message(cJSON *message)
     }
 }
 
+/* Free the bytes a message spends on its reasoning, returning how many were
+ * freed. The field itself must stay present (the upstream rejects an assistant
+ * turn without reasoning_content), so it is emptied, not removed. */
+static size_t claw_core_strip_reasoning(cJSON *message)
+{
+    cJSON *reasoning;
+    size_t before;
+
+    if (!cJSON_IsObject(message)) {
+        return 0;
+    }
+    reasoning = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+    if (!cJSON_IsString(reasoning) || !reasoning->valuestring || !reasoning->valuestring[0]) {
+        return 0;
+    }
+    before = strlen(reasoning->valuestring);
+    cJSON_SetValuestring(reasoning, "");
+    return before;
+}
+
+/* Bytes of the newest `keep_rounds` rounds (and everything after them). */
+static size_t claw_core_tail_bytes(const cJSON *messages, size_t count, size_t keep_rounds)
+{
+    size_t seen = 0;
+    size_t total = 0;
+    size_t i;
+
+    for (i = count; i > 0; i--) {
+        const cJSON *message = cJSON_GetArrayItem(messages, (int)(i - 1));
+
+        total += claw_core_message_bytes(message);
+        if (claw_core_message_has_tool_calls(message) && ++seen >= keep_rounds) {
+            break;
+        }
+    }
+    return total;
+}
+
+/* Index of the newest round (assistant message carrying tool calls), or -1. */
+static int claw_core_newest_round_index(const cJSON *messages, size_t count)
+{
+    size_t i;
+
+    for (i = count; i > 0; i--) {
+        if (claw_core_message_has_tool_calls(cJSON_GetArrayItem(messages, (int)(i - 1)))) {
+            return (int)(i - 1);
+        }
+    }
+    return -1;
+}
+
 void claw_core_trim_runtime_messages(cJSON *runtime_messages)
 {
     size_t count;
@@ -493,7 +544,9 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
     size_t rounds = 0;
     size_t seen_rounds = 0;
     size_t shrinkable;
+    size_t keep_rounds;
     size_t i;
+    int newest_index;
 
     if (!cJSON_IsArray(runtime_messages)) {
         return;
@@ -511,29 +564,69 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
             rounds++;
         }
     }
-    if (rounds <= CLAW_TIER_RUNTIME_KEEP_ROUNDS) {
+    if (rounds == 0) {
         return;
     }
-    shrinkable = rounds - CLAW_TIER_RUNTIME_KEEP_ROUNDS;
+    newest_index = claw_core_newest_round_index(runtime_messages, count);
 
+    /* Pass 1 - cheapest to lose first (added). The previous version evicted purely
+     * by age, so on a device turn it dropped the tool results the model had just
+     * read while keeping the model's own reasoning - which is both the largest
+     * category (a single 38 KB reasoning block is routine) and the least useful,
+     * because it has already been acted on. The model then re-read the files, the
+     * re-reads were evicted in turn, and it livelocked (observed: 22 reads, 0
+     * writes, 100 KB of reasoning, then a stall). Reasoning is scratch work; a
+     * tool result costs a whole extra round trip to recover. So: strip reasoning
+     * from every round but the newest before omitting anything. */
     for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
         cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
-        size_t before;
-        size_t after;
 
-        if (claw_core_message_has_tool_calls(message)) {
-            seen_rounds++;
-            if (seen_rounds > shrinkable) {
-                break;  /* newest rounds are protected */
-            }
-        } else if (seen_rounds == 0) {
-            continue;  /* messages before the first tool round (e.g. the user) */
+        if ((int)i == newest_index) {
+            continue;  /* the live train of thought */
         }
+        total -= claw_core_strip_reasoning(message);
+    }
 
-        before = claw_core_message_bytes(message);
-        claw_core_shrink_message(message);
-        after = claw_core_message_bytes(message);
-        total -= (before > after) ? (before - after) : 0;
+    /* Bound the protected window by bytes as well as round count (added): a single
+     * huge round can otherwise fill the whole budget with content the loop below
+     * is not allowed to touch, leaving it no choice but to evict everything else
+     * and still miss the budget. */
+    keep_rounds = CLAW_TIER_RUNTIME_KEEP_ROUNDS;
+    while (keep_rounds > 1 &&
+            claw_core_tail_bytes(runtime_messages, count, keep_rounds) >
+            (CLAW_TIER_RUNTIME_BUDGET_BYTES / 2)) {
+        keep_rounds--;
+    }
+
+    /* Pass 2 - omit the oldest tool results, protecting the newest rounds. */
+    if (rounds > keep_rounds && total > CLAW_TIER_RUNTIME_BUDGET_BYTES) {
+        shrinkable = rounds - keep_rounds;
+
+        for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
+            cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
+            size_t before;
+            size_t after;
+
+            if (claw_core_message_has_tool_calls(message)) {
+                seen_rounds++;
+                if (seen_rounds > shrinkable) {
+                    break;  /* newest rounds are protected */
+                }
+            } else if (seen_rounds == 0) {
+                continue;  /* messages before the first tool round (e.g. the user) */
+            }
+
+            before = claw_core_message_bytes(message);
+            claw_core_shrink_message(message);
+            after = claw_core_message_bytes(message);
+            total -= (before > after) ? (before - after) : 0;
+        }
+    }
+
+    /* Pass 3 - last resort: even the live reasoning goes before we accept an
+     * oversized round. The model loses its scratchpad, not its evidence. */
+    if (total > CLAW_TIER_RUNTIME_BUDGET_BYTES && newest_index >= 0) {
+        claw_core_strip_reasoning(cJSON_GetArrayItem(runtime_messages, newest_index));
     }
 }
 

@@ -17,6 +17,7 @@
 
 #include "claw_paths.h"
 #include "claw_utils_string.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -246,12 +247,11 @@ void claw_core_finish_from_plain_text(uint32_t request_id,
 }
 
 /* bounded tool results (added): one tool result can be as large as the cap output
- * buffer. When it exceeds CLAW_CORE_TOOL_RESULT_MAX_BYTES the full text is written
+ * buffer. When it exceeds CLAW_TIER_TOOL_RESULT_MAX_BYTES the full text is written
  * under the writable DATA root and the model sees only a UTF-8-safe head plus the
  * file path, which it can re-read with read_file offset/limit. Bounds the
- * per-result context cost without discarding information. */
-#define CLAW_CORE_TOOL_RESULT_MAX_BYTES (8 * 1024)
-#define CLAW_CORE_TOOL_RESULT_HEAD_BYTES (4 * 1024)
+ * per-result context cost without discarding information.
+ * Threshold and head size are per-tier (claw_tier.h). */
 #define CLAW_CORE_TOOL_RESULT_SPILL_SUBDIR ".toolout"
 #define CLAW_CORE_TOOL_RESULT_HINT_RESERVE 448
 #define CLAW_CORE_TOOL_RESULT_SPILL_MAX_AGE_MS (10 * 60 * 1000ULL)
@@ -323,7 +323,7 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
         return NULL;
     }
     len = strlen(tool_output);
-    if (len <= CLAW_CORE_TOOL_RESULT_MAX_BYTES) {
+    if (len <= CLAW_TIER_TOOL_RESULT_MAX_BYTES) {
         return tool_output;
     }
 
@@ -366,7 +366,7 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
     }
     fclose(file);
 
-    head = claw_utils_utf8_prefix_len(tool_output, CLAW_CORE_TOOL_RESULT_HEAD_BYTES);
+    head = claw_utils_utf8_prefix_len(tool_output, CLAW_TIER_TOOL_RESULT_HEAD_BYTES);
     bounded = malloc(head + CLAW_CORE_TOOL_RESULT_HINT_RESERVE + 1);
     if (!bounded) {
         return tool_output;
@@ -387,10 +387,8 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
  * without bound. Trim ONLY when the accumulated bytes exceed a budget, then shrink
  * the oldest rounds just enough to get back under it; the newest rounds are never
  * touched. Deliberately conservative: dropping recent in-turn detail makes the
- * model redo work it already did. Full content stays in the session. */
-#define CLAW_CORE_RUNTIME_BUDGET_BYTES (48 * 1024)
-#define CLAW_CORE_RUNTIME_KEEP_ROUNDS 4
-#define CLAW_CORE_RUNTIME_ARG_MAX_BYTES 200
+ * model redo work it already did. Full content stays in the session.
+ * Budget/keep/arg limits are per-tier (claw_tier.h). */
 #define CLAW_CORE_RUNTIME_OMITTED_NOTE "[older tool result omitted to bound context; full content is in the session history]"
 
 static bool claw_core_message_has_tool_calls(const cJSON *message)
@@ -404,10 +402,15 @@ static bool claw_core_message_has_tool_calls(const cJSON *message)
     return cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0;
 }
 
-/* Approximate the bytes a message contributes to the request body. */
+/* Approximate the bytes a message contributes to the request body.
+ * reasoning_content is included (added): it is re-sent verbatim on every round
+ * like any other field, and on a measured device task it was 28% of the replay.
+ * It used to be invisible to the budget below, so the window could believe it
+ * had trimmed while the body kept growing. */
 static size_t claw_core_message_bytes(const cJSON *message)
 {
     const cJSON *content;
+    const cJSON *reasoning;
     const cJSON *tool_calls;
     const cJSON *call = NULL;
     size_t total = 0;
@@ -418,6 +421,10 @@ static size_t claw_core_message_bytes(const cJSON *message)
     content = cJSON_GetObjectItemCaseSensitive(message, "content");
     if (cJSON_IsString(content) && content->valuestring) {
         total += strlen(content->valuestring);
+    }
+    reasoning = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+    if (cJSON_IsString(reasoning) && reasoning->valuestring) {
+        total += strlen(reasoning->valuestring);
     }
     tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
     cJSON_ArrayForEach(call, tool_calls) {
@@ -435,6 +442,7 @@ static void claw_core_shrink_message(cJSON *message)
 {
     const cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
     cJSON *content;
+    cJSON *reasoning;
     cJSON *tool_calls;
     cJSON *call = NULL;
 
@@ -450,12 +458,23 @@ static void claw_core_shrink_message(cJSON *message)
     if (!cJSON_IsArray(tool_calls)) {
         return;  /* user / plain assistant messages are left as-is */
     }
+
+    /* Blank the reasoning of a round we are already trimming. The field must stay
+     * present - the upstream rejects an assistant turn without reasoning_content -
+     * and an empty string is what the replay layer already writes for stored turns
+     * that lack one, so it is accepted. The full text stays in the session: this
+     * stops it being re-sent, it does not lose it. */
+    reasoning = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+    if (cJSON_IsString(reasoning) && reasoning->valuestring && reasoning->valuestring[0]) {
+        cJSON_SetValuestring(reasoning, "");
+    }
+
     cJSON_ArrayForEach(call, tool_calls) {
         cJSON *fn = cJSON_GetObjectItemCaseSensitive(call, "function");
         cJSON *args = fn ? cJSON_GetObjectItemCaseSensitive(fn, "arguments") : NULL;
 
-        if (cJSON_IsString(args) && strlen(args->valuestring) > CLAW_CORE_RUNTIME_ARG_MAX_BYTES) {
-            size_t keep = claw_utils_utf8_prefix_len(args->valuestring, CLAW_CORE_RUNTIME_ARG_MAX_BYTES);
+        if (cJSON_IsString(args) && strlen(args->valuestring) > CLAW_TIER_RUNTIME_ARG_MAX_BYTES) {
+            size_t keep = claw_utils_utf8_prefix_len(args->valuestring, CLAW_TIER_RUNTIME_ARG_MAX_BYTES);
             char *shortened = malloc(keep + 32);
 
             if (shortened) {
@@ -483,7 +502,7 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
     for (i = 0; i < count; i++) {
         total += claw_core_message_bytes(cJSON_GetArrayItem(runtime_messages, i));
     }
-    if (total <= CLAW_CORE_RUNTIME_BUDGET_BYTES) {
+    if (total <= CLAW_TIER_RUNTIME_BUDGET_BYTES) {
         return;  /* small turn: leave everything intact */
     }
 
@@ -492,12 +511,12 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
             rounds++;
         }
     }
-    if (rounds <= CLAW_CORE_RUNTIME_KEEP_ROUNDS) {
+    if (rounds <= CLAW_TIER_RUNTIME_KEEP_ROUNDS) {
         return;
     }
-    shrinkable = rounds - CLAW_CORE_RUNTIME_KEEP_ROUNDS;
+    shrinkable = rounds - CLAW_TIER_RUNTIME_KEEP_ROUNDS;
 
-    for (i = 0; i < count && total > CLAW_CORE_RUNTIME_BUDGET_BYTES; i++) {
+    for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
         cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
         size_t before;
         size_t after;
@@ -516,6 +535,92 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
         after = claw_core_message_bytes(message);
         total -= (before > after) ? (before - after) : 0;
     }
+}
+
+/* ===== serialize guard (added) =============================================
+ * Every budget above governs one part of the request; nobody governed the total.
+ * On a failing device task the parts summed past what the module could hold and
+ * the failure surfaced as "Out of memory serializing request" deep inside the
+ * JSON writer, after all the context work had been paid for. This estimates the
+ * body before the call, trims once if it is over the estimate budget, and
+ * refuses cleanly (with advice the model can act on) if it is still too big.
+ * ========================================================================== */
+
+/* Rough but monotone: raw text plus a fixed allowance for JSON scaffolding. */
+static size_t claw_core_request_body_bytes(const char *system_prompt,
+                                           const cJSON *messages,
+                                           const char *tools_json)
+{
+    size_t total = 0;
+    size_t count;
+    size_t i;
+
+    if (system_prompt) {
+        total += strlen(system_prompt);
+    }
+    if (tools_json) {
+        total += strlen(tools_json);
+    }
+    if (cJSON_IsArray(messages)) {
+        count = cJSON_GetArraySize(messages);
+        for (i = 0; i < count; i++) {
+            total += claw_core_message_bytes(cJSON_GetArrayItem(messages, i));
+        }
+    }
+    return total + (total / 8);  /* +12.5% for keys, escaping and structure */
+}
+
+esp_err_t claw_core_context_guard_request(const char *system_prompt,
+                                          cJSON *messages,
+                                          const char *tools_json,
+                                          char **out_error_message)
+{
+    size_t bytes;
+    size_t count;
+    size_t i;
+
+    if (out_error_message) {
+        *out_error_message = NULL;
+    }
+    bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
+    if (bytes < CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES) {
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG,
+             "request body ~%u bytes >= %u budget: shrinking trimmed rounds (free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u)",
+             (unsigned)bytes,
+             (unsigned)CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+
+    if (cJSON_IsArray(messages)) {
+        count = cJSON_GetArraySize(messages);
+        for (i = 0; i < count; i++) {
+            /* Oldest first. claw_core_shrink_message is a no-op for user and
+             * final-assistant messages, so the live instruction survives. */
+            claw_core_shrink_message(cJSON_GetArrayItem(messages, i));
+        }
+    }
+
+    bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
+    if (bytes < CLAW_TIER_SERIALIZE_REFUSE_BYTES) {
+        ESP_LOGW(TAG, "request body shrunk to ~%u bytes", (unsigned)bytes);
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "request body still ~%u bytes after shrinking; refusing the round", (unsigned)bytes);
+    if (out_error_message) {
+        *out_error_message = claw_utils_string_dup_printf(
+            "This turn's context is too large to send (%u bytes, limit %u). Nothing was sent and no "
+            "tool ran. Recover by: (1) calling pin_note with the goal, decisions and current state; "
+            "(2) starting a new session if the task is finished; (3) splitting the job into smaller "
+            "subagent tasks. Do not retry the same request unchanged.",
+            (unsigned)bytes, (unsigned)CLAW_TIER_SERIALIZE_REFUSE_BYTES);
+    }
+    return ESP_ERR_INVALID_SIZE;
 }
 
 esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,

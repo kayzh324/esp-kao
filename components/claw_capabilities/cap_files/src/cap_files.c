@@ -18,12 +18,15 @@
 #include "cJSON.h"
 #include "claw_cap.h"
 #include "claw_paths.h"
+#include "claw_tier.h"
 #include "claw_utils_string.h"
 #include "esp_log.h"
 
 static const char *TAG = "cap_files";
 
-#define CAP_FILES_MAX_FILE_SIZE (32 * 1024)
+/* Per-tier (claw_tier.h): the file-size limits are sized so a whole source file
+ * fits one read/edit on modules with the RAM for it. */
+#define CAP_FILES_MAX_FILE_SIZE CLAW_TIER_CAP_FILES_MAX_FILE_SIZE
 
 /* read_file paging (added): line-numbered output with offset/limit so the model
  * can page through large files instead of re-reading whole files every time.
@@ -35,14 +38,14 @@ static const char *TAG = "cap_files";
 
 /* edit_file (added): anchored old_text -> new_text replacement. Bounds: whole
  * file must fit the edit buffer; replacements must be unique per old_text. */
-#define CAP_FILES_EDIT_MAX_FILE_SIZE (32 * 1024)
+#define CAP_FILES_EDIT_MAX_FILE_SIZE CLAW_TIER_CAP_FILES_EDIT_MAX_FILE_SIZE
 #define CAP_FILES_EDIT_TMP_SUFFIX ".tmp"
 
 /* grep_files (added): content search. Without it the model had to read whole
  * files (hitting output truncation) or write throwaway Lua probes just to locate
  * code - the main reason modifying an existing program cost more than writing a
  * new one. Plain-text matching: the platform has no POSIX regex. */
-#define CAP_FILES_GREP_MAX_FILE_SIZE (64 * 1024)
+#define CAP_FILES_GREP_MAX_FILE_SIZE CLAW_TIER_CAP_FILES_GREP_MAX_FILE_SIZE
 #define CAP_FILES_GREP_LINE_MAX_BYTES 400
 #define CAP_FILES_GREP_DEFAULT_MAX_RESULTS 100
 #define CAP_FILES_GREP_MAX_RESULTS_LIMIT 200
@@ -1746,7 +1749,7 @@ static const claw_cap_descriptor_t s_files_descriptors[] = {
         .id = "read_file",
         .name = "read_file",
         .family = "files",
-        .description = "Read a text file as numbered lines. Use offset (0-based line) and limit (line count) to page through large files.",
+        .description = "Read a text file as numbered lines. Read the whole file in one call whenever it fits; use offset/limit only to continue past a truncation or to re-check a known region.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path under an allowed directory\"},\"offset\":{\"type\":\"integer\",\"description\":\"First line to show, 0-based (default 0)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return (default: as many as fit)\"}},\"required\":[\"path\"]}",

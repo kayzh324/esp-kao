@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "claw_tier.h"
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -26,8 +27,9 @@ static const char *TAG = "claw_cap";
 
 #define CLAW_CAP_TOOL_DESCRIPTION_MAX 256
 
+/* Per-tier (claw_tier.h): the cap output buffer is sized to the module's RAM. */
 #ifndef CLAW_CAP_CORE_OUTPUT_SIZE
-#define CLAW_CAP_CORE_OUTPUT_SIZE (32 * 1024)
+#define CLAW_CAP_CORE_OUTPUT_SIZE CLAW_TIER_CAP_CORE_OUTPUT_SIZE
 #endif
 
 typedef struct {
@@ -374,6 +376,67 @@ static void claw_cap_add_capped_description(cJSON *obj, const char *desc, const 
     cJSON_AddStringToObject(obj, "description", buf);
 }
 
+/* ===== tools-json cache (added) ============================================
+ * The tool preamble is the same ~16 KB of JSON for a given (visible tool set,
+ * wrap mode) and was rebuilt - cJSON parse per schema, tree build, then one
+ * contiguous PrintUnformatted - for every agent on every round. On a measured
+ * device task it was ~24% of the total token bill and a large share of the
+ * allocator churn that precedes serialization OOMs. The key is a hash over the
+ * tools actually authorized for this caller, so a visibility or enable/disable
+ * change invalidates it by construction.
+ * ========================================================================== */
+#define CLAW_CAP_TOOLS_CACHE_SLOTS 2  /* 0 = raw, 1 = wrapped for the responses API */
+static char *s_tools_cache[CLAW_CAP_TOOLS_CACHE_SLOTS];
+static uint32_t s_tools_cache_key[CLAW_CAP_TOOLS_CACHE_SLOTS];
+static bool s_tools_cache_valid[CLAW_CAP_TOOLS_CACHE_SLOTS];
+
+/* The descriptors are static const structs owned by each capability component,
+ * so their addresses identify both the descriptor set and its contents: a
+ * re-register with different text produces different pointers. */
+static uint32_t claw_cap_tools_key_locked(const claw_cap_call_context_t *ctx,
+                                          bool wrap_for_responses_api)
+{
+    uint32_t key = 2166136261u;
+
+    for (size_t i = 0; i < s_runtime.descriptor_capacity; i++) {
+        claw_cap_descriptor_slot_t *slot = &s_runtime.descriptor_slots[i];
+
+        if (claw_cap_authorize_llm_tool_locked(slot, ctx) != CLAW_CAP_AUTH_OK) {
+            continue;
+        }
+        key ^= (uint32_t)(uintptr_t)slot->descriptor.name;
+        key *= 16777619u;
+        key ^= (uint32_t)(uintptr_t)slot->descriptor.description;
+        key *= 16777619u;
+        key ^= (uint32_t)(uintptr_t)slot->descriptor.input_schema_json;
+        key *= 16777619u;
+        key ^= (uint32_t)i;
+        key *= 16777619u;
+    }
+    key ^= (uint32_t)(wrap_for_responses_api ? 1u : 0u);
+    key *= 16777619u;
+    return key ? key : 1u;
+}
+
+static void claw_cap_tools_cache_store(size_t slot, uint32_t key, const char *json)
+{
+    char *copy;
+
+    if (!json || slot >= CLAW_CAP_TOOLS_CACHE_SLOTS) {
+        return;
+    }
+    copy = strdup(json);
+    if (!copy) {
+        return;
+    }
+    claw_cap_lock();
+    free(s_tools_cache[slot]);
+    s_tools_cache[slot] = copy;
+    s_tools_cache_key[slot] = key;
+    s_tools_cache_valid[slot] = true;
+    claw_cap_unlock();
+}
+
 char *claw_cap_build_llm_tools_json(const claw_cap_call_context_t *ctx,
                                     bool wrap_for_responses_api)
 {
@@ -381,10 +444,21 @@ char *claw_cap_build_llm_tools_json(const claw_cap_call_context_t *ctx,
     cJSON *raw_tools = NULL;
     cJSON *wrapped_tools = NULL;
     cJSON *raw_tool = NULL;
+    const size_t cache_slot = wrap_for_responses_api ? 1 : 0;
+    uint32_t cache_key;
 
     if (!s_runtime.initialized) {
         return NULL;
     }
+
+    claw_cap_lock();
+    cache_key = claw_cap_tools_key_locked(ctx, wrap_for_responses_api);
+    if (s_tools_cache_valid[cache_slot] && s_tools_cache_key[cache_slot] == cache_key) {
+        raw_tools_json = s_tools_cache[cache_slot] ? strdup(s_tools_cache[cache_slot]) : NULL;
+        claw_cap_unlock();
+        return raw_tools_json;
+    }
+    claw_cap_unlock();
 
     raw_tools = cJSON_CreateArray();
     if (!raw_tools) {
@@ -430,6 +504,7 @@ char *claw_cap_build_llm_tools_json(const claw_cap_call_context_t *ctx,
     if (!wrap_for_responses_api) {
         raw_tools_json = cJSON_PrintUnformatted(raw_tools);
         cJSON_Delete(raw_tools);
+        claw_cap_tools_cache_store(cache_slot, cache_key, raw_tools_json);
         return raw_tools_json;
     }
 
@@ -475,6 +550,7 @@ char *claw_cap_build_llm_tools_json(const claw_cap_call_context_t *ctx,
     raw_tools_json = cJSON_PrintUnformatted(wrapped_tools);
     cJSON_Delete(wrapped_tools);
     cJSON_Delete(raw_tools);
+    claw_cap_tools_cache_store(cache_slot, cache_key, raw_tools_json);
     return raw_tools_json;
 }
 

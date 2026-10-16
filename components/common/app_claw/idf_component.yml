@@ -109,6 +109,9 @@ dependencies:
   claw_skill:
     path: ../../claw_modules/claw_skill
 
+  claw_tier:
+    path: ../../claw_modules/claw_tier
+
   claw_utils:
     path: ../../claw_modules/claw_utils
 

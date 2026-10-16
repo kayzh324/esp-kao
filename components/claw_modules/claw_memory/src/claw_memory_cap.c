@@ -9,10 +9,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "cJSON.h"
 #include "claw_cap.h"
 #include "claw_core_llm.h"
+#include "claw_utils_string.h"
 
 #define CLAW_MEMORY_GROUP_ID "claw_memory"
 
@@ -631,8 +633,171 @@ static esp_err_t cap_memory_forget_execute(const char *input_json,
     return err;
 }
 
-static const claw_cap_descriptor_t s_memory_descriptors[] = {
-    {
+/* ===== pinned core (added) ==================================================
+ * A per-session "task card" the agent may rewrite at will. Unlike everything
+ * else in the context, it is NOT subject to session projection: the Pinned Core
+ * provider replays it on every round, so the goal, constraints, API cheat-sheet
+ * or draft outline survive compaction instead of being re-derived - or, as
+ * happened on a long device task, re-read from disk every few rounds.
+ * ========================================================================== */
+
+#define CAP_MEMORY_PINNED_TMP_SUFFIX ".tmp"
+
+static esp_err_t cap_memory_write_file_atomic(const char *path, const char *text)
+{
+    char *tmp_path = NULL;
+    FILE *file = NULL;
+    size_t len;
+    bool written;
+    esp_err_t err = ESP_OK;
+
+    if (!path || !text) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    tmp_path = dup_printf("%s%s", path, CAP_MEMORY_PINNED_TMP_SUFFIX);
+    if (!tmp_path) {
+        return ESP_ERR_NO_MEM;
+    }
+    file = fopen(tmp_path, "wb");
+    if (!file) {
+        err = ESP_FAIL;
+        goto done;
+    }
+    len = strlen(text);
+    written = (len == 0) || (fwrite(text, 1, len, file) == len);
+    if (fclose(file) != 0) {
+        written = false;
+    }
+    file = NULL;
+    if (!written) {
+        err = ESP_FAIL;
+        goto done;
+    }
+    /* FATFS rename() reports EEXIST when the target already exists, so fall back
+     * to removing the old file and retrying once. */
+    if (rename(tmp_path, path) != 0) {
+        unlink(path);
+        if (rename(tmp_path, path) != 0) {
+            err = ESP_FAIL;
+        }
+    }
+
+done:
+    if (file) {
+        fclose(file);
+    }
+    if (err != ESP_OK) {
+        unlink(tmp_path);
+    }
+    free(tmp_path);
+    return err;
+}
+
+static esp_err_t cap_memory_pin_execute(const char *input_json,
+                                        const claw_cap_call_context_t *ctx,
+                                        char *output,
+                                        size_t output_size)
+{
+    cJSON *root = NULL;
+    const char *content = NULL;
+    const char *final_text = NULL;
+    bool append = false;
+    bool truncated = false;
+    size_t final_len;
+    char *path = NULL;
+    char *existing = NULL;
+    char *combined = NULL;
+    char *capped = NULL;
+    esp_err_t err;
+
+    if (!output || output_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    output[0] = '\0';
+
+    if (!ctx || !ctx->session_id || !ctx->session_id[0]) {
+        snprintf(output, output_size, "pin_note failed: no session in this call context.");
+        return ESP_OK;
+    }
+
+    root = cJSON_Parse(input_json ? input_json : "");
+    content = cJSON_GetStringValue(cJSON_GetObjectItem(root, "content"));
+    if (!content || !content[0]) {
+        snprintf(output, output_size, "pin_note failed: 'content' is required.");
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+    append = cJSON_IsTrue(cJSON_GetObjectItem(root, "append"));
+
+    path = claw_memory_session_pinned_path_dup(ctx->session_id);
+    if (!path) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+    if (ensure_parent_dir(path) != ESP_OK) {
+        snprintf(output, output_size, "pin_note failed: cannot create the pinned-note directory.");
+        err = ESP_FAIL;
+        goto done;
+    }
+
+    if (append) {
+        /* Best effort: a missing or oversized previous note is simply not merged. */
+        if (claw_memory_read_file_alloc(path, CLAW_TIER_PINNED_MAX_BYTES, &existing) != ESP_OK) {
+            free(existing);
+            existing = NULL;
+        }
+        if (existing && existing[0]) {
+            combined = dup_printf("%s\n%s", existing, content);
+            if (!combined) {
+                err = ESP_ERR_NO_MEM;
+                goto done;
+            }
+        }
+    }
+
+    final_text = combined ? combined : content;
+    final_len = strlen(final_text);
+    if (final_len > CLAW_TIER_PINNED_MAX_BYTES) {
+        static const char trunc_note[] = "\n[...note truncated: keep it short]";
+        size_t keep = claw_utils_utf8_prefix_len(final_text, CLAW_TIER_PINNED_MAX_BYTES);
+        size_t cap = keep + sizeof(trunc_note);
+
+        capped = malloc(cap);
+        if (!capped) {
+            err = ESP_ERR_NO_MEM;
+            goto done;
+        }
+        snprintf(capped, cap, "%.*s%s", (int)keep, final_text, trunc_note);
+        final_text = capped;
+        truncated = true;
+    }
+
+    err = cap_memory_write_file_atomic(path, final_text);
+    if (err != ESP_OK) {
+        snprintf(output, output_size, "pin_note failed: cannot write the pinned note (%s).",
+                 esp_err_to_name(err));
+        goto done;
+    }
+    if (truncated) {
+        snprintf(output, output_size,
+                 "OK (pinned %u bytes, truncated from %u; keep the note under %u bytes)",
+                 (unsigned)strlen(final_text), (unsigned)final_len,
+                 (unsigned)CLAW_TIER_PINNED_MAX_BYTES);
+    } else {
+        snprintf(output, output_size, "OK (pinned %u bytes, replayed every round)",
+                 (unsigned)final_len);
+    }
+
+done:
+    free(capped);
+    free(combined);
+    free(existing);
+    free(path);
+    cJSON_Delete(root);
+    return err;
+}
+
+static const claw_cap_descriptor_t s_memory_descriptors[] = {    {
         .id = "memory_store",
         .name = "memory_store",
         .family = "memory",
@@ -685,6 +850,19 @@ static const claw_cap_descriptor_t s_memory_descriptors[] = {
         .input_schema_json =
             "{\"type\":\"object\",\"properties\":{\"memory_id\":{\"type\":\"string\"}},\"required\":[\"memory_id\"]}",
         .execute = cap_memory_forget_execute,
+    },
+    {
+        .id = "pin_note",
+        .name = "pin_note",
+        .family = "memory",
+        .description = "Write your task card: goal, constraints, decisions, API notes, draft "
+                       "outline, current blocker. Replayed into context every round and survives "
+                       "compaction. Rewrite it whole to keep it current; set append=true to add.",
+        .kind = CLAW_CAP_KIND_CALLABLE,
+        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
+        .input_schema_json =
+            "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},\"append\":{\"type\":\"boolean\"}},\"required\":[\"content\"]}",
+        .execute = cap_memory_pin_execute,
     },
 };
 

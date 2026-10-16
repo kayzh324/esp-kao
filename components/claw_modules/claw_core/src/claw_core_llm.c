@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 static const char *TAG = "claw_core_llm";
@@ -251,6 +252,19 @@ esp_err_t claw_core_llm_chat_messages_for_session(claw_core_handle_t core,
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "chat_messages: runtime chat failed err=0x%x", err);
+        if (err == ESP_ERR_NO_MEM) {
+            /* heap-舌苔 (added): the failing "Out of memory serializing request"
+             * happens inside cJSON_PrintUnformatted, which needs ONE contiguous
+             * allocation. Free total can look healthy while the largest block is
+             * not, so both are logged for PSRAM and internal RAM. */
+            ESP_LOGE(TAG,
+                     "request build OOM: messages=%u free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u",
+                     (unsigned)cJSON_GetArraySize(messages),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        }
     }
     return err;
 }

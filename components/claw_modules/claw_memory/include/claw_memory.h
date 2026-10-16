@@ -96,6 +96,9 @@ extern const claw_core_context_provider_t claw_memory_profile_provider;
 extern const claw_core_context_provider_t claw_memory_long_term_provider;
 extern const claw_core_context_provider_t claw_memory_long_term_lightweight_provider;
 extern const claw_core_context_provider_t claw_memory_session_history_provider;
+/* Pinned core (added): replays the session's pin_note task card on every round.
+ * Registered before the session-history provider so it survives compaction. */
+extern const claw_core_context_provider_t claw_memory_pinned_core_provider;
 
 #ifdef __cplusplus
 }

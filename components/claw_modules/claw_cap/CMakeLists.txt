@@ -6,5 +6,6 @@ idf_component_register(
     REQUIRES
         claw_core
         claw_skill
+        claw_tier
         freertos
 )

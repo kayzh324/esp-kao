@@ -18,6 +18,7 @@
 
 #include "claw_core.h"
 #include "claw_core_llm.h"
+#include "claw_tier.h"
 #include "claw_utils_string.h"
 #include "claw_utils_time.h"
 
@@ -25,12 +26,14 @@
 extern "C" {
 #endif
 
-#define CLAW_CORE_DEFAULT_STACK_SIZE      (8 * 1024)
+/* Performance-dependent defaults come from claw_tier.h (added): they differ by
+ * chip so a bigger module gets a bigger task/queue/round budget. */
+#define CLAW_CORE_DEFAULT_STACK_SIZE      CLAW_TIER_CORE_STACK_SIZE
 #define CLAW_CORE_DEFAULT_PRIORITY        5
 #define CLAW_CORE_DEFAULT_CORE            tskNO_AFFINITY
-#define CLAW_CORE_DEFAULT_REQUEST_Q       4
-#define CLAW_CORE_DEFAULT_RESPONSE_Q      4
-#define CLAW_CORE_DEFAULT_TOOL_ITERATIONS 40
+#define CLAW_CORE_DEFAULT_REQUEST_Q       CLAW_TIER_CORE_REQUEST_Q
+#define CLAW_CORE_DEFAULT_RESPONSE_Q      CLAW_TIER_CORE_RESPONSE_Q
+#define CLAW_CORE_DEFAULT_TOOL_ITERATIONS CLAW_TIER_CORE_TOOL_ITERATIONS
 #define CLAW_CORE_INSERT_QUEUE_LEN        4
 #define CLAW_CORE_INFLIGHT_SESSION_ID_SIZE 128
 #ifndef CLAW_CORE_LOG_SNIPPET_LEN
@@ -194,6 +197,14 @@ esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,
 /* in-turn window (added): shrink old tool rounds in runtime_messages so a long
  * turn's request body stays bounded. Full content remains in the session. */
 void claw_core_trim_runtime_messages(cJSON *runtime_messages);
+/* serialize guard (added): estimate the request body before it is serialized;
+ * shrink once if over the tier's estimate budget, refuse cleanly if it is still
+ * over the hard limit. Returns ESP_ERR_INVALID_SIZE and fills
+ * *out_error_message with model-actionable advice in the refuse case. */
+esp_err_t claw_core_context_guard_request(const char *system_prompt,
+                                          cJSON *messages,
+                                          const char *tools_json,
+                                          char **out_error_message);
 void claw_core_finish_from_plain_text(uint32_t request_id,
                                       const claw_core_llm_response_t *llm_response,
                                       claw_core_response_t *response);

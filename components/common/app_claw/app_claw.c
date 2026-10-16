@@ -25,6 +25,7 @@
 #include "cap_session_mgr.h"
 #endif
 #include "claw_paths.h"
+#include "claw_tier.h"
 #if CONFIG_APP_CLAW_CAP_CORE
 #include "claw_cap.h"
 #include "claw_core.h"
@@ -114,7 +115,12 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Do not read sessions/*.log, memory_records.jsonl, memory_index.json or MEMORY.md as task input - " \
     "they are the agent's own plumbing, not task material. " \
     "Do not keep your own backup copies: write_file and edit_file save the previous version automatically " \
-    "and report its path, and restore_file brings it back. "
+    "and report its path, and restore_file brings it back. " \
+    "For work that runs over many rounds, first pin_note your task card (goal, constraints, API notes, " \
+    "draft outline) - it is replayed every round and survives context compaction. " \
+    "Write code drafts to a file with write_file as soon as you have them; a draft that only lives in your " \
+    "reasoning is lost when the context is compacted. " \
+    "After a compaction, re-read the pinned card before re-reading any file."
 
 #define APP_SYSTEM_PROMPT \
     APP_SYSTEM_PROMPT_COMMON \
@@ -128,8 +134,9 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
 /* Max tool-calling rounds per turn (added). This is a runaway-loop backstop, not
  * a planning budget: it is deliberately high so ordinary long autonomous work
  * never hits it, and the model is no longer told a round count. Context growth
- * is bounded separately by session projection, so long turns stay affordable. */
-#define APP_CLAW_MAX_TOOL_ITERATIONS 100
+ * is bounded separately by session projection, so long turns stay affordable.
+ * Per-tier (claw_tier.h): a module with more RAM may run a longer turn. */
+#define APP_CLAW_MAX_TOOL_ITERATIONS CLAW_TIER_APP_MAX_TOOL_ITERATIONS
 
 #if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE && CONFIG_APP_CLAW_CAP_LUA
 static char *app_claw_split_job_field(char **cursor)
@@ -735,12 +742,12 @@ static void app_claw_fill_core_config(const app_claw_config_t *config,
 #endif
     core_config->call_cap = claw_cap_call_from_core;
     core_config->cap_user_ctx = NULL;
-    core_config->task_stack_size = 16 * 1024;
+    core_config->task_stack_size = CLAW_TIER_APP_CORE_STACK_SIZE;
     core_config->task_priority = 5;
     core_config->task_core = tskNO_AFFINITY;
     core_config->max_tool_iterations = max_tool_iterations;
-    core_config->request_queue_len = 4;
-    core_config->response_queue_len = 4;
+    core_config->request_queue_len = CLAW_TIER_APP_CORE_QUEUE_LEN;
+    core_config->response_queue_len = CLAW_TIER_APP_CORE_QUEUE_LEN;
     core_config->max_context_providers = 8;
 }
 #endif
@@ -896,6 +903,7 @@ esp_err_t app_claw_start(const app_claw_config_t *config)
 #else
             claw_memory_long_term_lightweight_provider,
 #endif
+            claw_memory_pinned_core_provider,
             claw_memory_session_history_provider,
             claw_skill_skills_list_provider,
         };

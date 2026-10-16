@@ -1,0 +1,25 @@
+menu "Claw Tier"
+
+    choice CLAW_TIER
+        prompt "Hardware performance tier"
+        default CLAW_TIER_ESP32P4 if IDF_TARGET_ESP32P4
+        default CLAW_TIER_ESP32S31 if IDF_TARGET_ESP32S31
+        default CLAW_TIER_ESP32S3
+        help
+            Selects the context/memory budget profile used by the agent stack
+            (claw_tier.h). The default follows the build target; override it here
+            when a board has more or less RAM than the chip's reference design.
+
+            ESP32-S3 is the measured performance floor the budgets were tuned
+            against. Higher tiers raise the per-request byte budgets so bigger
+            contexts fit in one round instead of being evicted and re-read.
+
+        config CLAW_TIER_ESP32S3
+            bool "ESP32-S3 (baseline / floor)"
+        config CLAW_TIER_ESP32P4
+            bool "ESP32-P4 (high performance)"
+        config CLAW_TIER_ESP32S31
+            bool "ESP32-S31 (high performance)"
+    endchoice
+
+endmenu

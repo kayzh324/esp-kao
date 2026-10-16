@@ -12,10 +12,12 @@
 
 #include "cJSON.h"
 #include "claw_memory.h"
+#include "claw_tier.h"
 #include "llm/claw_llm_runtime.h"
 
 #define CLAW_MEMORY_DEFAULT_MAX_MESSAGE_CHARS    4096
-#define CLAW_MEMORY_DEFAULT_MAX_TOOL_ITERATIONS  10
+/* Per-tier (claw_tier.h): how many tool rounds the extract job may run. */
+#define CLAW_MEMORY_DEFAULT_MAX_TOOL_ITERATIONS  CLAW_TIER_MEMORY_TOOL_ITERATIONS
 #define CLAW_MEMORY_MAX_PATH                     192
 #define CLAW_MEMORY_MAX_SUMMARIES                3
 #define CLAW_MEMORY_MAX_LABEL_CHARS              8
@@ -26,6 +28,7 @@
 #define CLAW_MEMORY_SESSION_SIZE_LIMIT           (300 * 1024) // 扩大了一倍session history的大小
 #define CLAW_MEMORY_RECALL_DEFAULT_LIMIT         8
 #define CLAW_MEMORY_RECORDS_FILE                 "memory_records.jsonl"
+#define CLAW_MEMORY_PINNED_DIR                   ".pinned"
 #define CLAW_MEMORY_INDEX_FILE                   "memory_index.json"
 #define CLAW_MEMORY_DIGEST_FILE                  "memory_digest.log"
 #define CLAW_MEMORY_MARKDOWN_FILE                "MEMORY.md"
@@ -75,6 +78,8 @@ void safe_copy(char *dst, size_t dst_size, const char *src);
 char *dup_printf(const char *fmt, ...);
 size_t claw_memory_text_buffer_size(size_t max_chars);
 char *claw_memory_session_path_dup(const char *session_id);
+char *claw_memory_session_pinned_path_dup(const char *session_id);
+esp_err_t claw_memory_read_file_alloc(const char *path, size_t max_bytes, char **out_text);
 void claw_memory_normalize_session_text(const char *src,
                                         char *dst,
                                         size_t dst_size,

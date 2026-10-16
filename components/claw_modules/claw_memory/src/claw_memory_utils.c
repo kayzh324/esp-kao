@@ -92,7 +92,56 @@ size_t claw_memory_text_buffer_size(size_t max_chars)
     return (max_chars * 4) + 1;
 }
 
-char *claw_memory_session_path_dup(const char *session_id)
+/* Read a whole small file into a heap string. Shared by the pinned-note path
+ * (capability + provider) so both agree on the size cap and error semantics. */
+esp_err_t claw_memory_read_file_alloc(const char *path, size_t max_bytes, char **out_text)
+{
+    FILE *file = NULL;
+    long size;
+    char *text = NULL;
+
+    if (!path || !out_text) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_text = NULL;
+    file = fopen(path, "rb");
+    if (!file) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return ESP_FAIL;
+    }
+    size = ftell(file);
+    if (size < 0 || (size_t)size > max_bytes) {
+        fclose(file);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    text = malloc((size_t)size + 1);
+    if (!text) {
+        fclose(file);
+        return ESP_ERR_NO_MEM;
+    }
+    if (size > 0 && fseek(file, 0, SEEK_SET) != 0) {
+        free(text);
+        fclose(file);
+        return ESP_FAIL;
+    }
+    if (size > 0 && fread(text, 1, (size_t)size, file) != (size_t)size) {
+        free(text);
+        fclose(file);
+        return ESP_FAIL;
+    }
+    text[size] = '\0';
+    fclose(file);
+    *out_text = text;
+    return ESP_OK;
+}
+
+/* Session key (added): the sanitized-id + FNV hash stem shared by every
+ * per-session file, so the session log and the pinned note can never disagree
+ * about which session they belong to. */
+static void claw_memory_session_key(const char *session_id, char *out, size_t out_size)
 {
     char safe_session_id[48];
     uint32_t hash = 2166136261u;
@@ -110,10 +159,40 @@ char *claw_memory_session_path_dup(const char *session_id)
         safe_session_id[24] = '\0';
     }
 
-    return dup_printf("%s/s_%s_%08" PRIx32 ".log",
-                      s_memory.session_root_dir,
-                      safe_session_id[0] ? safe_session_id : "default",
-                      hash);
+    snprintf(out, out_size, "s_%s_%08" PRIx32,
+             safe_session_id[0] ? safe_session_id : "default", hash);
+}
+
+char *claw_memory_session_path_dup(const char *session_id)
+{
+    char key[48];
+
+    claw_memory_session_key(session_id, key, sizeof(key));
+    return dup_printf("%s/%s.log", s_memory.session_root_dir, key);
+}
+
+/* Pinned core (added): the per-session "task card" the agent keeps rewriting.
+ * It is replayed by a context provider on every round, so it survives session
+ * projection. Lives in a hidden sibling of the session directory so it follows
+ * the live DATA mount (flash vs SD) instead of hard-coding a root. */
+char *claw_memory_session_pinned_path_dup(const char *session_id)
+{
+    char key[48];
+    char parent[CLAW_MEMORY_MAX_PATH];
+    const char *slash;
+    size_t len;
+
+    claw_memory_session_key(session_id, key, sizeof(key));
+
+    slash = strrchr(s_memory.session_root_dir, '/');
+    len = slash ? (size_t)(slash - s_memory.session_root_dir) : 0;
+    if (len >= sizeof(parent)) {
+        len = sizeof(parent) - 1;
+    }
+    memcpy(parent, s_memory.session_root_dir, len);
+    parent[len] = '\0';
+
+    return dup_printf("%s/%s/%s.md", parent, CLAW_MEMORY_PINNED_DIR, key);
 }
 
 void claw_memory_normalize_session_text(const char *src,

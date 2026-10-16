@@ -5,5 +5,6 @@ idf_component_register(
         "include"
     REQUIRES
         claw_cap
+        claw_tier
         claw_utils
 )

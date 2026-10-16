@@ -23,8 +23,9 @@
 
 static const char *TAG = "claw_memory";
 
-#define CLAW_MEMORY_ASYNC_EXTRACT_QUEUE_LEN 4
-#define CLAW_MEMORY_ASYNC_EXTRACT_STACK_SIZE (6 * 1024)
+/* Per-tier (claw_tier.h): extract-job queue depth and stack. */
+#define CLAW_MEMORY_ASYNC_EXTRACT_QUEUE_LEN CLAW_TIER_MEMORY_EXTRACT_QUEUE_LEN
+#define CLAW_MEMORY_ASYNC_EXTRACT_STACK_SIZE CLAW_TIER_MEMORY_EXTRACT_STACK_SIZE
 #define CLAW_MEMORY_ASYNC_EXTRACT_PRIORITY 5
 #define CLAW_MEMORY_ASYNC_EXTRACT_SWEEP_TICKS pdMS_TO_TICKS(60000)
 
@@ -103,7 +104,7 @@ typedef struct {
 
 #define CLAW_MEMORY_SESSION_IDX_MAGIC 0x58444843u /* CHDX */
 #define CLAW_MEMORY_SESSION_IDX_VERSION 1
-#define CLAW_MEMORY_SESSION_COMPACT_TOOL_TURNS 1
+#define CLAW_MEMORY_SESSION_COMPACT_TOOL_TURNS CLAW_TIER_COMPACT_TOOL_TURNS
 #define CLAW_MEMORY_SESSION_SIZE_WARNING \
     "Session history is still too large after compaction. Please create a new conversation by sending \
     the command `/session new [name]`, and delete the old session by `/session delete <name>` due to limited storage space."
@@ -1959,8 +1960,9 @@ static const char *claw_memory_session_record_text_role(claw_core_context_record
  * keep point, so long sessions keep their decisions without replaying everything.
  * ========================================================================== */
 
-#define CLAW_MEMORY_PROJECT_TRIGGER_CHARS (48 * 1024)
-#define CLAW_MEMORY_PROJECT_KEEP_CHARS    (24 * 1024)
+/* Per-tier (claw_tier.h): trigger/keep budgets scale with the module's RAM. */
+#define CLAW_MEMORY_PROJECT_TRIGGER_CHARS CLAW_TIER_PROJECT_TRIGGER_CHARS
+#define CLAW_MEMORY_PROJECT_KEEP_CHARS    CLAW_TIER_PROJECT_KEEP_CHARS
 #define CLAW_MEMORY_PROJECT_TOOL_MAX_CHARS 1500
 #define CLAW_MEMORY_PROJECT_TRANSCRIPT_MAX_CHARS (40 * 1024)
 
@@ -2200,6 +2202,8 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
     claw_llm_response_t response = {0};
     char *error_message = NULL;
     char *user_prompt = NULL;
+    char *system_prompt = NULL;
+    char *summary_text = NULL;
     esp_err_t err;
 
     if (!session_id || !s_async_extract.runtime) {
@@ -2279,9 +2283,20 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
     cJSON_AddItemToArray(messages, user_msg);
     user_msg = NULL;
 
+    /* Ask for a sized summary (added): the summary is replayed on every round, so
+     * its length is a per-round cost. The target follows the tier's budget. */
+    system_prompt = dup_printf("%s Keep the whole summary under %u characters; use short labelled "
+                               "lines of facts, decisions, file paths and numbers - no prose.",
+                               CLAW_MEMORY_PROJECT_SYSTEM_PROMPT,
+                               (unsigned)CLAW_TIER_SUMMARY_TARGET_CHARS);
+    if (!system_prompt) {
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+
     err = claw_llm_runtime_chat(s_async_extract.runtime,
                                 &(claw_llm_chat_request_t) {
-                                    .system_prompt = CLAW_MEMORY_PROJECT_SYSTEM_PROMPT,
+                                    .system_prompt = system_prompt,
                                     .messages = messages,
                                     .tools_json = NULL,
                                     .abort_flag = NULL,
@@ -2299,10 +2314,31 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
         goto done;
     }
 
-    err = session_history_append_summary_record(session_id, response.text, keep_from);
+    /* Hard cap on the summary itself (added): the model does not always honour the
+     * requested size, and an oversized summary is exactly the snowball that used to
+     * collapse the working set. Truncate UTF-8 safe and say so in the text. */
+    if (strlen(response.text) > CLAW_TIER_SUMMARY_MAX_CHARS) {
+        static const char trunc_note[] = "\n...[summary truncated to bound per-round replay]";
+        size_t keep = claw_utils_utf8_prefix_len(response.text, CLAW_TIER_SUMMARY_MAX_CHARS);
+        size_t cap = keep + sizeof(trunc_note);
+
+        summary_text = malloc(cap);
+        if (!summary_text) {
+            err = ESP_ERR_NO_MEM;
+            goto done;
+        }
+        snprintf(summary_text, cap, "%.*s%s", (int)keep, response.text, trunc_note);
+        ESP_LOGW(TAG, "compaction summary capped session=%s from=%u to=%u chars",
+                 session_id, (unsigned)strlen(response.text), (unsigned)strlen(summary_text));
+    }
+
+    err = session_history_append_summary_record(session_id,
+                                                summary_text ? summary_text : response.text,
+                                                keep_from);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "compaction wrote summary session=%s keep_from=%" PRIu32 " chars=%u",
-                 session_id, keep_from, (unsigned)strlen(response.text));
+                 session_id, keep_from,
+                 (unsigned)strlen(summary_text ? summary_text : response.text));
     }
 
 done:
@@ -2318,6 +2354,8 @@ done:
     claw_llm_response_free(&response);
     free(error_message);
     free(user_prompt);
+    free(system_prompt);
+    free(summary_text);
     free(transcript);
     free(prev_summary);
     session_history_index_free(&index);
@@ -2421,6 +2459,8 @@ static esp_err_t session_history_project_if_needed(const char *session_id,
 {
     claw_memory_session_index_t index = {0};
     size_t prev_keep = 0;
+    size_t last_summary_index = SIZE_MAX;
+    size_t summary_replay_chars = 0;
     size_t replay_chars = 0;
     size_t keep_from;
     size_t i;
@@ -2457,17 +2497,36 @@ static esp_err_t session_history_project_if_needed(const char *session_id,
         }
         k = cJSON_GetObjectItemCaseSensitive(rec, "keep_from");
         if (cJSON_IsNumber(k)) {
+            cJSON *s = cJSON_GetObjectItemCaseSensitive(rec, "summary");
+
             prev_keep = (size_t)k->valueint;
+            last_summary_index = i;
+            summary_replay_chars = (cJSON_IsString(s) && s->valuestring) ? strlen(s->valuestring) : 0;
         }
         cJSON_Delete(rec);
     }
 
+    /* Summary-snowball fix (added): replay emits the latest summary as a leading
+     * system message on EVERY round, so its size belongs in the trigger sum. It
+     * used to be excluded, which let the summary grow unbounded while the trigger
+     * saw only the tail - each compaction then fired one round after the previous
+     * one and the model's usable history collapsed to the last round or two. */
+    replay_chars = summary_replay_chars;
     for (i = prev_keep; i < index.count; i++) {
         if (index.entries[i].record_type != CLAW_CORE_CONTEXT_RECORD_SUMMARY) {
             replay_chars += session_history_record_object_len(&index.entries[i]);
         }
     }
     if (replay_chars <= CLAW_MEMORY_PROJECT_TRIGGER_CHARS) {
+        err = ESP_OK;
+        goto done;
+    }
+
+    /* Minimum spacing between compactions (added): a session whose replay stays
+     * over budget for several rounds in a row would otherwise compact on each of
+     * them, paying an extra LLM call and shrinking the kept tail every time. */
+    if (last_summary_index != SIZE_MAX &&
+            index.count - last_summary_index < (size_t)CLAW_TIER_COMPACT_MIN_NEW_RECORDS) {
         err = ESP_OK;
         goto done;
     }
@@ -2789,6 +2848,63 @@ static esp_err_t claw_memory_session_history_collect(const claw_core_request_t *
 const claw_core_context_provider_t claw_memory_session_history_provider = {
     .name = "Session History",
     .collect = claw_memory_session_history_collect,
+    .user_ctx = NULL,
+    .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
+};
+
+/* Pinned core (added): the agent's own task card for this session, written with
+ * the pin_note capability. It is the one piece of context that compaction cannot
+ * evict, so goal/constraints/API notes/draft outline stay visible no matter how
+ * long the turn runs. Read once per request (<= CLAW_TIER_PINNED_MAX_BYTES). */
+static const char *CLAW_MEMORY_PINNED_HEADER =
+    "Pinned core (your task card for this session; replayed every round and kept "
+    "through compaction). Update it with pin_note as the work moves on.\n";
+
+static esp_err_t claw_memory_pinned_core_collect(const claw_core_request_t *request,
+                                                 claw_core_context_t *out_context,
+                                                 void *user_ctx)
+{
+    char *path = NULL;
+    char *note = NULL;
+    char *content = NULL;
+    size_t total;
+    esp_err_t err;
+
+    (void)user_ctx;
+
+    if (!request || !out_context || !request->session_id || !request->session_id[0]) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    memset(out_context, 0, sizeof(*out_context));
+
+    path = claw_memory_session_pinned_path_dup(request->session_id);
+    if (!path) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = claw_memory_read_file_alloc(path, CLAW_TIER_PINNED_MAX_BYTES, &note);
+    free(path);
+    if (err != ESP_OK || !note || !note[0]) {
+        free(note);
+        return ESP_ERR_NOT_FOUND;  /* no pinned note yet: nothing to inject */
+    }
+
+    total = strlen(CLAW_MEMORY_PINNED_HEADER) + strlen(note) + 2;
+    content = calloc(1, total);
+    if (!content) {
+        free(note);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(content, total, "%s%s\n", CLAW_MEMORY_PINNED_HEADER, note);
+    free(note);
+
+    out_context->kind = CLAW_CORE_CONTEXT_KIND_SYSTEM_PROMPT;
+    out_context->content = content;
+    return ESP_OK;
+}
+
+const claw_core_context_provider_t claw_memory_pinned_core_provider = {
+    .name = "Pinned Core",
+    .collect = claw_memory_pinned_core_collect,
     .user_ctx = NULL,
     .flags = CLAW_CORE_CONTEXT_PROVIDER_FLAG_REQUEST_START_ONLY,
 };

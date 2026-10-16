@@ -19,6 +19,9 @@ dependencies:
   claw_utils:
     path: ../../../components/claw_modules/claw_utils
 
+  claw_tier:
+    path: ../../../components/claw_modules/claw_tier
+
   system_ui:
     rules:
     - if: $CONFIG{ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT} == True

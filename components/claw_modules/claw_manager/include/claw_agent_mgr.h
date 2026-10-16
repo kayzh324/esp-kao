@@ -12,6 +12,7 @@
 #include "claw_cap.h"
 #include "claw_core.h"
 #include "claw_session_mgr.h"
+#include "claw_tier.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -24,9 +25,11 @@ extern "C" {
  * heap makes the subagent's very FIRST request fail while building/serializing
  * the body ("Out of memory serializing request"), which then costs a failure
  * notification plus a re-plan. Refusing up front, with an actionable message, is
- * much cheaper than spawn-fail-diagnose-retry. */
-#define CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES 2000
-#define CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES (64 * 1024)
+ * much cheaper than spawn-fail-diagnose-retry.
+ * Limits are per-tier (claw_tier.h): a module with more RAM admits more. */
+#define CLAW_AGENT_MGR_SPAWN_PROMPT_MAX_BYTES        CLAW_TIER_SPAWN_PROMPT_MAX_BYTES
+#define CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES CLAW_TIER_SPAWN_MIN_INTERNAL_FREE_BYTES
+#define CLAW_AGENT_MGR_SPAWN_MIN_PSRAM_BLOCK_BYTES   CLAW_TIER_SPAWN_MIN_PSRAM_BLOCK_BYTES
 
 typedef enum {
     CLAW_AGENT_MGR_STATUS_EMPTY = 0,

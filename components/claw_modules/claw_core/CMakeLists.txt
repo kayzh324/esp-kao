@@ -27,6 +27,7 @@ idf_component_register(
         esp-tls
         freertos
         mbedtls
+        claw_tier
         claw_utils
     PRIV_REQUIRES
         claw_event_router

@@ -25,9 +25,12 @@ it, or for running an existing script once.
 
 - Use `grep_files` to find the exact place (`path`, `pattern`, optional `file_filter`); it returns
   `path:line: text`.
-- Then `read_file` with `offset`/`limit` around that line - read the window you need, not the whole file.
-- Do not read a whole large file "to understand it", and do not write a throwaway probe script just to
-  read a file. Both are the slowest, most expensive way to find one line.
+- Then `read_file` **the whole file in one call** whenever it fits - most do. Splitting a readable file
+  into several windows is not cheaper: every extra round re-sends the whole conversation, so it costs
+  more, not less.
+- Use `offset`/`limit` for exactly two things: continuing past a truncated read, and re-checking a known
+  region after an edit.
+- Do not write a throwaway probe script just to read a file.
 
 ## 3. Change by editing, not rewriting
 
@@ -58,8 +61,9 @@ code, `A -> B` for relations.
 
 - **Read budget per session**: the relevant `REQ.md` lines, the `ARCH.md` rows you will touch, the tail of
   `PROGRESS.md`, and the one or two code files you will edit. Nothing else.
-- Do **not** write a plan document (`PLAN.md`, task cards, a design essay): every session would have to
-  re-read it, and it costs more than it returns.
+- Do **not** write a plan document (`PLAN.md`, a design essay): every session would have to re-read it,
+  and it costs more than it returns. Working state that changes minute to minute belongs in `pin_note`
+  (see §8), not in a disk document.
 - Record intent and evidence apart: **user-confirmed = verified**; you only ran it yourself = **built**.
 - Locate by `ARCH.md` rows before opening code; never read the whole tree or every doc.
 
@@ -81,6 +85,19 @@ Use a subagent for a bounded task you can name in one sentence; do the explorato
 - **The subagent needs the task, not the workflow**: do not tell it to load heavy skills.
 - **Delegation is async**: after `spawn_agent`, end your turn and wait to be woken by a
   completion/failure notification. Do not poll `inspect_agent`.
+
+## 8. Long work: put your state on the device, not in your head
+
+Anything that runs over many rounds will have its context compacted several times. Two habits keep the
+work recoverable:
+
+- **Pin the task card first.** Before a long read-and-reason stretch, call `pin_note` with the goal, the
+  constraints, the file paths, the API you looked up, and the current plan. It is replayed into context on
+  every round and survives compaction, so after a compaction you re-read the pinned card, not the whole
+  file tree. Keep it short; rewrite it whole as the work moves on.
+- **Write drafts to a file, not to your reasoning.** A design or a 100-line function written out inside
+  your reasoning is the first thing compaction drops - and then you re-derive it at full price. Put it in
+  a working file with `write_file` as soon as it exists, then turn it into the real file with `edit_file`.
 
 ## Reporting
 

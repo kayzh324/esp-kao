@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "llm/claw_llm_http_transport.h"
 
@@ -289,7 +290,32 @@ void claw_core_agent_loop_task(void *arg)
                 goto finish_request;
             }
 
-            claw_core_control_set_phase(core, CLAW_CORE_AGENT_LOOP_PHASE_BEFORE_LLM_HTTP);
+            /* serialize guard (added): the budgets inside the context builder each
+             * bound their own part; nothing bounded their sum. Estimate the body
+             * here, before the transport allocates it, so an oversized round fails
+             * cheaply and with advice instead of as "Out of memory serializing
+             * request" halfway through building the JSON. */
+            ESP_LOGI(TAG,
+                     "request=%" PRIu32 " iteration=%u built context: system=%u tools=%u messages=%u "
+                     "free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u",
+                     request.view.request_id, (unsigned)iteration,
+                     (unsigned)(system_prompt ? strlen(system_prompt) : 0),
+                     (unsigned)(tools_json ? strlen(tools_json) : 0),
+                     (unsigned)cJSON_GetArraySize(messages),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            err = claw_core_context_guard_request(system_prompt,
+                                                  messages,
+                                                  tools_json,
+                                                  &response.view.error_message);
+            if (err != ESP_OK) {
+                if (!response.view.error_message) {
+                    response.view.error_message = claw_utils_string_dup(esp_err_to_name(err));
+                }
+                goto finish_request;
+            }
             {
                 bool drained = false;
 

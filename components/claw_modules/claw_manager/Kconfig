@@ -2,9 +2,12 @@ menu "Claw Manager"
 
     config CLAW_AGENT_MGR_MAX_SUBAGENTS
         int "Maximum concurrent subagents"
+        default 4 if CLAW_TIER_ESP32P4 || CLAW_TIER_ESP32S31
         default 3
         range 1 8
         help
             Maximum number of live subagent runtime slots managed by claw_agent_mgr.
+            The default follows the claw_tier choice: the S3-floor tier keeps 3,
+            higher tiers allow one more concurrent subagent.
 
 endmenu

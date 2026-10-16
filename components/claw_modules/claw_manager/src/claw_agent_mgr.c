@@ -43,7 +43,7 @@ static const char *TAG = "claw_agent_mgr";
  * clears RUNNING through the completion observer, so RUNNING+IDLE means the turn
  * never reported back (crashed task, dropped request). */
 #define CLAW_AGENT_MGR_REAPER_IDLE_STUCK_MS     120000
-#define CLAW_AGENT_MGR_REAPER_TASK_STACK        4096
+#define CLAW_AGENT_MGR_REAPER_TASK_STACK        CLAW_TIER_REAPER_STACK_SIZE
 #define CLAW_AGENT_MGR_REAPER_TASK_PRIO         4
 
 static const char *CLAW_AGENT_MGR_DEFAULT_ROOT_AGENT_SYSTEM_PROMPT =
@@ -1175,6 +1175,16 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
         ESP_LOGW(TAG, "spawn rejected: internal free %u bytes below %d",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES);
+        return ESP_ERR_NO_MEM;
+    }
+    /* Largest-block check (added): serializing a request needs ONE contiguous
+     * allocation, and that is what actually failed on device ("Out of memory
+     * serializing request"). Free total can look fine while no block that big
+     * exists, so gate on the largest contiguous PSRAM block too. */
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < CLAW_AGENT_MGR_SPAWN_MIN_PSRAM_BLOCK_BYTES) {
+        ESP_LOGW(TAG, "spawn rejected: largest SPIRAM block %u bytes below %d",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                 CLAW_AGENT_MGR_SPAWN_MIN_PSRAM_BLOCK_BYTES);
         return ESP_ERR_NO_MEM;
     }
 

@@ -944,7 +944,10 @@ static const claw_cap_descriptor_t s_system_descriptors[] = {
         .family = "system",
         .description = "Schedule a device restart after an optional delay in milliseconds.",
         .kind = CLAW_CAP_KIND_CALLABLE,
-        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
+        /* root-only (added): a subagent was observed restarting the board in the
+         * middle of a delegated task, killing every other agent's work. Cockpit
+         * decisions stay with the root agent. */
+        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM | CLAW_CAP_FLAG_ROOT_AGENT_ONLY,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"delay_ms\":{\"type\":\"integer\",\"minimum\":0}}}",
         .execute = cap_system_execute_restart,
     },

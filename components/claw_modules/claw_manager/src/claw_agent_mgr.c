@@ -877,6 +877,34 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
                            safe_error);
         break;
     }
+    case CLAW_CORE_COMPLETION_BLOCKED: {
+        /* blocked (added): the subagent did NOT fail and did NOT finish - it asked
+         * the user a question (via report_blocked) and stopped. The parent's role
+         * here is to route the answer back, not to re-plan from scratch, so the
+         * notification says exactly that and forbids the useless follow-up that
+         * used to burn a second full round-limit run. */
+        char safe_reason[160];
+        const char *src = (summary->error_message && summary->error_message[0]) ?
+                          summary->error_message : "needs a user decision";
+        size_t i = 0;
+
+        for (; src[i] && i + 1 < sizeof(safe_reason); i++) {
+            char c = src[i];
+            safe_reason[i] = (c == '"' || c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+        }
+        safe_reason[i] = '\0';
+        written = snprintf(text,
+                           sizeof(text),
+                           "<subagent_blocked agent_id=\"%s\" request_id=\"%" PRIu32 "\" reason=\"%s\">"
+                           "The subagent stopped because it needs a decision only the user can make, and "
+                           "has already put the question to the user. Do NOT send it 'keep going' - that "
+                           "would only repeat the block. Wait for the user's answer, then forward it with "
+                           "send_agent_followup; use close_agent if the user declines.</subagent_blocked>",
+                           agent->agent_id,
+                           summary->request_id,
+                           safe_reason);
+        break;
+    }
     case CLAW_CORE_COMPLETION_DONE:
     default:
         written = snprintf(text,

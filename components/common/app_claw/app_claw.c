@@ -120,7 +120,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "draft outline) - it is replayed every round and survives context compaction. " \
     "Write code drafts to a file with write_file as soon as you have them; a draft that only lives in your " \
     "reasoning is lost when the context is compacted. " \
-    "After a compaction, re-read the pinned card before re-reading any file."
+    "After a compaction, re-read the pinned card before re-reading any file. " \
+    "Authority: when you delegate, state what the task may take and must restore; if you hit something " \
+    "only the user can decide, call report_blocked and stop - never take what you were not given, and " \
+    "never work around a block."
 
 #define APP_SYSTEM_PROMPT \
     APP_SYSTEM_PROMPT_COMMON \

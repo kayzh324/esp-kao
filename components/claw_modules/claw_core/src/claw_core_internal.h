@@ -116,6 +116,10 @@ struct claw_core_state {
     char inflight_session_id[CLAW_CORE_INFLIGHT_SESSION_ID_SIZE];
     claw_core_agent_loop_phase_t agent_loop_phase;
     volatile bool inflight_abort;
+    /* blocked outcome (added): set by a capability via claw_core_mark_blocked(),
+     * consumed by the agent loop when the turn ends. */
+    volatile bool blocked_requested;
+    char blocked_reason[192];
     claw_core_control_abort_reason_t inflight_abort_reason;
     claw_core_request_item_t insert_queue[CLAW_CORE_INSERT_QUEUE_LEN];
     size_t insert_queue_head;

@@ -15,6 +15,7 @@
 
 #include "cJSON.h"
 #include "claw_cap.h"
+#include "claw_core.h"
 #include "claw_version.h"
 #include "claw_task.h"
 #include "esp_check.h"
@@ -913,6 +914,100 @@ static esp_err_t cap_system_execute_restart(const char *input_json,
     return ESP_OK;
 }
 
+/* report_blocked (added): the one legitimate way out of "I am blocked on a
+ * decision I am not allowed to make". Before this, a subagent handed a task whose
+ * done-criterion needed something it could not take had no channel at all: it
+ * either did it anyway (one run killed the user's desktop to grab the display) or
+ * spun until the round limit (another ran 64 rounds of grep). Neither is a
+ * judgement the worker should be making, and no amount of context budgeting fixes
+ * it. Asking is the missing outcome.
+ *
+ * This is deliberately resource-agnostic: the worker says in plain words what it
+ * is blocked on. There is no resource taxonomy to keep in sync with an open-ended
+ * set of boards and peripherals. */
+static esp_err_t cap_system_execute_report_blocked(const char *input_json,
+                                                   const claw_cap_call_context_t *ctx,
+                                                   char *output,
+                                                   size_t output_size)
+{
+    cJSON *root = NULL;
+    const char *blocked_on = NULL;
+    const char *question = NULL;
+    const char *will_do = NULL;
+    const char *channel = NULL;
+    const char *chat_id = NULL;
+    char reason[192];
+    char text[640];
+    char payload[192];
+    esp_err_t err;
+
+    if (!output || output_size == 0 || !ctx) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    output[0] = '\0';
+
+    root = cJSON_Parse(input_json ? input_json : "");
+    blocked_on = cJSON_GetStringValue(cJSON_GetObjectItem(root, "blocked_on"));
+    question = cJSON_GetStringValue(cJSON_GetObjectItem(root, "question"));
+    will_do = cJSON_GetStringValue(cJSON_GetObjectItem(root, "will_do"));
+    if (!blocked_on || !blocked_on[0] || !question || !question[0]) {
+        snprintf(output, output_size,
+                 "report_blocked failed: 'blocked_on' and 'question' are required.");
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    channel = (ctx->target_channel && ctx->target_channel[0]) ? ctx->target_channel : ctx->channel;
+    chat_id = (ctx->target_chat_id && ctx->target_chat_id[0]) ? ctx->target_chat_id : ctx->chat_id;
+    if (!channel || !channel[0] || !chat_id || !chat_id[0]) {
+        snprintf(output, output_size,
+                 "report_blocked failed: no conversation to ask in.");
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    /* Attribution: an unattributed message from a subagent reads as the root agent
+     * behaving oddly - which is exactly why subagent stage messages were switched
+     * off. Name the sender instead of hiding it: in the text for the human, and in
+     * the payload for a front end that can render it. */
+    if (ctx->caller == CLAW_CAP_CALLER_SUB_AGENT) {
+        snprintf(text, sizeof(text), "[%s agent] Blocked - need your go-ahead: %s\nWhy I cannot decide it: %s%s%s",
+                 (ctx->agent_type && ctx->agent_type[0]) ? ctx->agent_type : "sub",
+                 question, blocked_on,
+                 (will_do && will_do[0]) ? "\nOnce you answer: " : "",
+                 (will_do && will_do[0]) ? will_do : "");
+        snprintf(payload, sizeof(payload),
+                 "{\"role\":\"subagent\",\"agent_type\":\"%s\",\"agent_id\":\"%s\"}",
+                 (ctx->agent_type && ctx->agent_type[0]) ? ctx->agent_type : "sub",
+                 (ctx->agent_id && ctx->agent_id[0]) ? ctx->agent_id : "");
+    } else {
+        snprintf(text, sizeof(text), "Blocked - need your go-ahead: %s\nWhy I cannot decide it: %s%s%s",
+                 question, blocked_on,
+                 (will_do && will_do[0]) ? "\nOnce you answer: " : "",
+                 (will_do && will_do[0]) ? will_do : "");
+        payload[0] = '\0';
+    }
+
+    err = claw_core_publish_agent_notice(channel, chat_id, text,
+                                         payload[0] ? payload : NULL);
+    if (err != ESP_OK) {
+        snprintf(output, output_size, "report_blocked failed: could not ask the user (%s).",
+                 esp_err_to_name(err));
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    snprintf(reason, sizeof(reason), "%s", blocked_on);
+    (void)claw_core_mark_blocked(ctx->core, reason);
+
+    snprintf(output, output_size,
+             "The question has been sent to the user and this turn now ends as blocked. "
+             "Do not retry the blocked action, do not look for a workaround, and do not start "
+             "other work - end your turn. The answer will arrive as a new message.");
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 static const claw_cap_descriptor_t s_system_descriptors[] = {
     {
         .id = "get_system_info",
@@ -950,6 +1045,19 @@ static const claw_cap_descriptor_t s_system_descriptors[] = {
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM | CLAW_CAP_FLAG_ROOT_AGENT_ONLY,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"delay_ms\":{\"type\":\"integer\",\"minimum\":0}}}",
         .execute = cap_system_execute_restart,
+    },
+    {
+        .id = "report_blocked",
+        .name = "report_blocked",
+        .family = "system",
+        .description = "Stop and ask the user when you are blocked on something only they can decide: an "
+                       "authorization, a resource another script holds, a product choice. Sends the "
+                       "question and ends this turn as blocked. Never work around it.",
+        .kind = CLAW_CAP_KIND_CALLABLE,
+        .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
+        .input_schema_json =
+            "{\"type\":\"object\",\"properties\":{\"blocked_on\":{\"type\":\"string\",\"description\":\"What you are blocked on, in plain words\"},\"question\":{\"type\":\"string\",\"description\":\"The single question the user must answer\"},\"will_do\":{\"type\":\"string\",\"description\":\"What you will do once it is answered\"}},\"required\":[\"blocked_on\",\"question\"]}",
+        .execute = cap_system_execute_report_blocked,
     },
 };
 

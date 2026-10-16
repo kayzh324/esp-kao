@@ -219,10 +219,67 @@ esp_err_t claw_core_publish_stage_text(const claw_core_request_t *request, const
     return pub_err;
 }
 
+/* agent notice (added): a capability (and therefore any subagent) can say one
+ * thing to the user's conversation. Until now only the root had a voice: a
+ * subagent's every word went back to the root, which is why delegated work showed
+ * no progressive rhythm and why a subagent that needed an authorization had no
+ * way to ask for one. Attribution rides in payload_json; the text is what the
+ * user actually reads, so callers prefix it when they are not the root. */
+esp_err_t claw_core_publish_agent_notice(const char *channel,
+                                         const char *chat_id,
+                                         const char *text,
+                                         const char *payload_json)
+{
+    claw_event_t event = {0};
+    esp_err_t err;
+
+    if (!channel || !channel[0] || !chat_id || !chat_id[0] || !text || !text[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Deliberately the SAME event type the root's replies use: that is the kind
+     * the router already forwards to the user's channel. A new event type would
+     * be silently dropped by routing, which is a failure that looks like "the
+     * question was never asked". Attribution is what distinguishes the sender,
+     * not the event type. */
+    err = build_out_message_event_common("notice",
+                                         "out_message",
+                                         0,
+                                         claw_utils_time_now_ms(),
+                                         channel,
+                                         chat_id,
+                                         text,
+                                         &event);
+    if (err != ESP_OK) {
+        return err;
+    }
+    /* Borrowed: claw_event_router_publish() clones (and the clone owns) both
+     * text and payload_json. */
+    event.payload_json = (char *)payload_json;
+
+    err = claw_event_router_publish(&event);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to publish agent notice: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
+/* blocked outcome (added): see claw_core.h. Note this is deliberately NOT a
+ * failure path - the turn did what it could and needs a decision. */
+esp_err_t claw_core_mark_blocked(claw_core_handle_t core, const char *reason)
+{
+    if (!core) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    strlcpy(core->blocked_reason, (reason && reason[0]) ? reason : "needs a user decision",
+            sizeof(core->blocked_reason));
+    core->blocked_requested = true;
+    return ESP_OK;
+}
+
 void claw_core_publish_stage_tool_calls(const claw_core_request_t *request,
                                         const claw_core_llm_response_t *response,
-                                        uint32_t iteration)
-{
+                                        uint32_t iteration){
 #if CONFIG_CLAW_CORE_STAGE_VERBOSITY_VERBOSE
     char buf[256];
     size_t off = 0;

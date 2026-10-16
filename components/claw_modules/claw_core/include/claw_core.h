@@ -25,6 +25,10 @@ typedef enum {
     CLAW_CORE_COMPLETION_DONE = 0,
     CLAW_CORE_COMPLETION_FAILED = 1,
     CLAW_CORE_COMPLETION_LIMIT_REACHED = 2,
+    /* blocked (added): the turn stopped because it needs something only the user
+     * can decide (an authorization, a product choice). It is NOT a failure: the
+     * question has been put to the user and the answer resumes the work. */
+    CLAW_CORE_COMPLETION_BLOCKED = 3,
 } claw_core_completion_type_t;
 
 typedef enum {
@@ -206,6 +210,20 @@ esp_err_t claw_core_add_completion_observer(claw_core_handle_t core,
                                             claw_core_completion_observer_fn observer,
                                             void *user_ctx);
 esp_err_t claw_core_publish_stage_text(const claw_core_request_t *request, const char *text);
+
+/* agent notice (added): let a capability speak to the user's own conversation.
+ * This is how a subagent gets a voice - a progress line or a blocking question -
+ * without routing everything through the root agent. `payload_json` is optional
+ * structured attribution (agent id/type) for a front end that can render it. */
+esp_err_t claw_core_publish_agent_notice(const char *channel,
+                                         const char *chat_id,
+                                         const char *text,
+                                         const char *payload_json);
+
+/* blocked outcome (added): a capability declares that this turn should end as
+ * BLOCKED rather than DONE, with the reason, because it needs something only the
+ * user can decide. Cleared at the start of every request. */
+esp_err_t claw_core_mark_blocked(claw_core_handle_t core, const char *reason);
 esp_err_t claw_core_submit(claw_core_handle_t core,
                            const claw_core_request_t *request,
                            uint32_t timeout_ms);

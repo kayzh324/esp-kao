@@ -149,6 +149,9 @@ void claw_core_agent_loop_task(void *arg)
             core->agent_loop_phase = CLAW_CORE_AGENT_LOOP_PHASE_BEFORE_BUILD_ITERATION_CONTEXT;
             core->inflight_abort = false;
             core->inflight_abort_reason = CLAW_CORE_CONTROL_ABORT_REASON_NONE;
+            /* blocked outcome (added): a fresh request starts unblocked. */
+            core->blocked_requested = false;
+            core->blocked_reason[0] = '\0';
             claw_core_ingress_clear_insert_queue_locked(core);
             xSemaphoreGive(core->inflight_lock);
         }
@@ -507,6 +510,12 @@ void claw_core_agent_loop_task(void *arg)
             claw_core_log_context_persist_failure(&request.view,
                                                   "persist_context_final",
                                                   persist_err);
+            /* blocked (added): report_blocked() put a question to the user, so this
+             * turn is not "done" - the parent must learn the work stopped for a
+             * decision rather than that it finished. Both still persist and notify;
+             * only the outcome differs. */
+            completion_outcome = core->blocked_requested ? CLAW_CORE_COMPLETION_BLOCKED
+                                                         : CLAW_CORE_COMPLETION_DONE;
             if (core->completion_observer_count > 0) {
                 claw_core_completion_summary_t summary = {
                     .request_id = request.view.request_id,
@@ -514,15 +523,15 @@ void claw_core_agent_loop_task(void *arg)
                     .final_text = response.view.text,
                     .context_providers_csv = obs_providers_csv,
                     .tool_calls_csv = obs_tool_calls_csv,
-                    .completion_type = CLAW_CORE_COMPLETION_DONE,
-                    .error_message = NULL,
+                    .completion_type = completion_outcome,
+                    .error_message = (completion_outcome == CLAW_CORE_COMPLETION_BLOCKED) ?
+                                         core->blocked_reason : NULL,
                 };
                 for (size_t i = 0; i < core->completion_observer_count; i++) {
                     core->completion_observers[i].fn(&summary,
                                                      core->completion_observers[i].user_ctx);
                 }
             }
-            completion_outcome = CLAW_CORE_COMPLETION_DONE;
             completion_notified = true;
         } else if (!response.view.error_message) {
             response.view.error_message = claw_utils_string_dup(esp_err_to_name(err));

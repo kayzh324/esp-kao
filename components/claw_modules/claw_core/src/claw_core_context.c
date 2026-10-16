@@ -506,6 +506,75 @@ static size_t claw_core_strip_reasoning(cJSON *message)
     return before;
 }
 
+/* reasoning folding (added) -------------------------------------------------
+ * The model's reasoning is the one category in a turn that cannot be recovered:
+ * a tool result can be re-read, but a conclusion the model already reached
+ * cannot be re-derived identically - and trying to re-derive it is exactly the
+ * read/forget/re-read loop we are trying to stop. So old reasoning is COMPRESSED
+ * rather than dropped: keep the head (intent and plan) and the tail (where the
+ * conclusions land) and mark the hole.
+ *
+ * Measured on a real 100-round device turn: per-round reasoning is ~400 chars
+ * median, so most rounds pass through untouched, and the diagnosis lines sit at
+ * the END of the reasoning ("Key insight: ...").
+ * ------------------------------------------------------------------------- */
+#define CLAW_CORE_REASONING_HEAD_CHARS 200
+#define CLAW_CORE_REASONING_TAIL_CHARS 400
+#define CLAW_CORE_REASONING_ELISION_MARK "\n[... reasoning middle elided to bound context ...]\n"
+
+/* Start of the last `max_bytes` bytes, moved forward so a UTF-8 sequence is
+ * never split. */
+static const char *claw_core_utf8_suffix(const char *text, size_t len, size_t max_bytes)
+{
+    size_t start = (len > max_bytes) ? (len - max_bytes) : 0;
+    const unsigned char *p = (const unsigned char *)text + start;
+
+    while (*p && ((*p & 0xC0) == 0x80)) {
+        p++;
+    }
+    return (const char *)p;
+}
+
+/* Compress one message's reasoning to head + tail + marker. Returns bytes freed;
+ * 0 when the reasoning is already short enough to be worth keeping whole. */
+static size_t claw_core_fold_reasoning(cJSON *message)
+{
+    cJSON *reasoning;
+    const char *text;
+    const char *tail;
+    size_t len;
+    size_t head;
+    size_t after;
+    char *folded;
+
+    if (!cJSON_IsObject(message)) {
+        return 0;
+    }
+    reasoning = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+    if (!cJSON_IsString(reasoning) || !reasoning->valuestring || !reasoning->valuestring[0]) {
+        return 0;
+    }
+    text = reasoning->valuestring;
+    len = strlen(text);
+    if (len <= (CLAW_CORE_REASONING_HEAD_CHARS + CLAW_CORE_REASONING_TAIL_CHARS +
+                sizeof(CLAW_CORE_REASONING_ELISION_MARK))) {
+        return 0;  /* short enough: the fold would free nothing */
+    }
+
+    head = claw_utils_utf8_prefix_len(text, CLAW_CORE_REASONING_HEAD_CHARS);
+    tail = claw_core_utf8_suffix(text, len, CLAW_CORE_REASONING_TAIL_CHARS);
+    after = head + strlen(CLAW_CORE_REASONING_ELISION_MARK) + strlen(tail);
+    folded = malloc(after + 1);
+    if (!folded) {
+        return 0;
+    }
+    snprintf(folded, after + 1, "%.*s%s%s", (int)head, text,
+             CLAW_CORE_REASONING_ELISION_MARK, tail);
+    cJSON_SetValuestring(reasoning, folded);
+    free(folded);
+    return len - after;
+}
+
 /* Bytes of the newest `keep_rounds` rounds (and everything after them). */
 static size_t claw_core_tail_bytes(const cJSON *messages, size_t count, size_t keep_rounds)
 {
@@ -537,7 +606,20 @@ static int claw_core_newest_round_index(const cJSON *messages, size_t count)
     return -1;
 }
 
-void claw_core_trim_runtime_messages(cJSON *runtime_messages)
+/* in-turn window (added): runtime_messages accumulates every tool round and the
+ * whole array is re-sent on each iteration, so a long turn grows the request
+ * body without bound. Trim ONLY when the accumulated bytes exceed the budget.
+ *
+ * Eviction order - by cost to recover, not by age (revised):
+ *   1. fold old reasoning to head+tail   - most bytes freed per unit of value
+ *   2. blank the oldest folded reasoning - its conclusions were kept in step 1
+ *   3. omit the oldest tool results      - recoverable with one extra round
+ *   4. fold/blank the newest reasoning   - last resort, the live thought
+ * The whole round is persisted before this runs, so nothing is lost from the
+ * session; this only stops it being re-sent. Whatever happened is reported
+ * through `note` so the caller can tell the model - silent amnesia is what
+ * turns a bounded context into a read/forget/re-read loop. */
+void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t note_size)
 {
     size_t count;
     size_t total = 0;
@@ -545,9 +627,15 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
     size_t seen_rounds = 0;
     size_t shrinkable;
     size_t keep_rounds;
+    size_t folded = 0;
+    size_t blanked = 0;
+    size_t omitted = 0;
     size_t i;
     int newest_index;
 
+    if (note && note_size > 0) {
+        note[0] = '\0';
+    }
     if (!cJSON_IsArray(runtime_messages)) {
         return;
     }
@@ -569,22 +657,21 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
     }
     newest_index = claw_core_newest_round_index(runtime_messages, count);
 
-    /* Pass 1 - cheapest to lose first (added). The previous version evicted purely
-     * by age, so on a device turn it dropped the tool results the model had just
-     * read while keeping the model's own reasoning - which is both the largest
-     * category (a single 38 KB reasoning block is routine) and the least useful,
-     * because it has already been acted on. The model then re-read the files, the
-     * re-reads were evicted in turn, and it livelocked (observed: 22 reads, 0
-     * writes, 100 KB of reasoning, then a stall). Reasoning is scratch work; a
-     * tool result costs a whole extra round trip to recover. So: strip reasoning
-     * from every round but the newest before omitting anything. */
+    /* Step 1 - compress old reasoning, never drop it outright. A tool result is
+     * re-readable; a conclusion is not, and re-deriving it on-device costs a full
+     * round each time. Folding frees most of the bytes while leaving the intent
+     * (head) and the conclusion (tail) in place. */
     for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
-        cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
+        size_t freed;
 
         if ((int)i == newest_index) {
             continue;  /* the live train of thought */
         }
-        total -= claw_core_strip_reasoning(message);
+        freed = claw_core_fold_reasoning(cJSON_GetArrayItem(runtime_messages, i));
+        if (freed > 0) {
+            total -= freed;
+            folded++;
+        }
     }
 
     /* Bound the protected window by bytes as well as round count (added): a single
@@ -598,12 +685,18 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
         keep_rounds--;
     }
 
-    /* Pass 2 - omit the oldest tool results, protecting the newest rounds. */
+    /* Step 2 - omit the oldest tool results, protecting the newest rounds. This is
+     * the big byte source and the cheap one to lose: the model can re-read a file
+     * in one round, and (with the conclusions from step 1 still in front of it) it
+     * can then act instead of re-deriving. Deliberately NOT ordered after blanking
+     * reasoning - that would trade the irreplaceable for the replaceable. */
     if (rounds > keep_rounds && total > CLAW_TIER_RUNTIME_BUDGET_BYTES) {
         shrinkable = rounds - keep_rounds;
 
         for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
             cJSON *message = cJSON_GetArrayItem(runtime_messages, i);
+            const cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
+            bool is_tool_result = cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0;
             size_t before;
             size_t after;
 
@@ -620,15 +713,53 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages)
             claw_core_shrink_message(message);
             after = claw_core_message_bytes(message);
             total -= (before > after) ? (before - after) : 0;
+            if (is_tool_result && before > after) {
+                omitted++;
+            }
         }
     }
 
-    /* Pass 3 - last resort: even the live reasoning goes before we accept an
+    /* Step 3 - still over budget after cheapening everything else: now, and only
+     * now, drop the oldest folded reasoning outright (oldest first - age is the
+     * only staleness proxy available). */
+    for (i = 0; i < count && total > CLAW_TIER_RUNTIME_BUDGET_BYTES; i++) {
+        size_t freed;
+
+        if ((int)i == newest_index) {
+            continue;
+        }
+        freed = claw_core_strip_reasoning(cJSON_GetArrayItem(runtime_messages, i));
+        if (freed > 0) {
+            total -= freed;
+            blanked++;
+        }
+    }
+
+    /* Step 4 - last resort: even the live reasoning goes before we accept an
      * oversized round. The model loses its scratchpad, not its evidence. */
     if (total > CLAW_TIER_RUNTIME_BUDGET_BYTES && newest_index >= 0) {
-        claw_core_strip_reasoning(cJSON_GetArrayItem(runtime_messages, newest_index));
+        cJSON *newest = cJSON_GetArrayItem(runtime_messages, newest_index);
+
+        if (claw_core_fold_reasoning(newest) > 0) {
+            folded++;
+        } else if (claw_core_strip_reasoning(newest) > 0) {
+            blanked++;
+        }
+    }
+
+    if (note && note_size > 0 && (folded > 0 || blanked > 0 || omitted > 0)) {
+        snprintf(note, note_size,
+                 "Context control: this turn is long, so %u earlier reasoning block(s) were "
+                 "%s and %u tool result(s) were dropped from the request. Nothing is lost from "
+                 "the session or from disk. Treat your pinned card and the files you have "
+                 "written as the authoritative state, and re-read a file only when you need "
+                 "its exact current text to edit it.",
+                 (unsigned)(folded + blanked),
+                 (blanked > 0) ? "compressed or cleared" : "compressed to their first and last part",
+                 (unsigned)omitted);
     }
 }
+
 
 /* ===== serialize guard (added) =============================================
  * Every budget above governs one part of the request; nobody governed the total.

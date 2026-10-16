@@ -195,8 +195,11 @@ esp_err_t claw_core_append_tool_results_messages(claw_core_state_t *core,
                                                  size_t tool_summary_size,
                                                  char **out_tool_results_json);
 /* in-turn window (added): shrink old tool rounds in runtime_messages so a long
- * turn's request body stays bounded. Full content remains in the session. */
-void claw_core_trim_runtime_messages(cJSON *runtime_messages);
+ * turn's request body stays bounded. Full content remains in the session.
+ * `note` receives a model-facing description of what was trimmed (empty when
+ * nothing was), so the caller can append it to the system prompt. */
+#define CLAW_CORE_TRIM_NOTE_MAX 384
+void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t note_size);
 /* serialize guard (added): estimate the request body before it is serialized;
  * shrink once if over the tier's estimate budget, refuse cleanly if it is still
  * over the hard limit. Returns ESP_ERR_INVALID_SIZE and fills

@@ -125,6 +125,9 @@ void claw_core_agent_loop_task(void *arg)
         bool completion_notified = false;
         /* llm-retry (added): one retry of the first LLM call of a turn. */
         bool llm_retry_used = false;
+        /* in-turn window report (added): what the previous round's trim did, so
+         * the model is told about lost context instead of silently forgetting. */
+        char trim_note[CLAW_CORE_TRIM_NOTE_MAX] = {0};
 
         if (xQueueReceive(core->request_queue, &request, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -288,6 +291,21 @@ void claw_core_agent_loop_task(void *arg)
             if (err != ESP_OK) {
                 response.view.error_message = claw_utils_string_dup(esp_err_to_name(err));
                 goto finish_request;
+            }
+
+            /* Tell the model what the in-turn window did to its own history. A
+             * silently trimmed context is what makes a long turn degrade into a
+             * read/forget/re-read loop: the model cannot tell "I never read this"
+             * from "this was taken away". */
+            if (trim_note[0]) {
+                char *prompt_with_note = claw_utils_string_dup_printf("%s\n%s",
+                                                                      system_prompt,
+                                                                      trim_note);
+
+                if (prompt_with_note) {
+                    free(system_prompt);
+                    system_prompt = prompt_with_note;
+                }
             }
 
             /* serialize guard (added): the budgets inside the context builder each
@@ -461,8 +479,9 @@ void claw_core_agent_loop_task(void *arg)
             }
 
             /* in-turn window (added): keep the request body bounded as rounds
-             * accumulate (the full round is already persisted above). */
-            claw_core_trim_runtime_messages(runtime_messages);
+             * accumulate (the full round is already persisted above). The note it
+             * leaves is attached to the next round's system prompt. */
+            claw_core_trim_runtime_messages(runtime_messages, trim_note, sizeof(trim_note));
 
             iteration++;
             if (iteration >= core->max_tool_iterations) {

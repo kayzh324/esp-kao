@@ -206,6 +206,46 @@ static esp_err_t parse_chat_response(const char *body,
     return ESP_OK;
 }
 
+/* message projection (added): the core annotates messages with fields that only
+ * some backends understand - `is_error` is an Anthropic `tool_result` field. This
+ * backend used to duplicate each message verbatim into the body, so that field
+ * reached an OpenAI-shaped upstream, which rejected the WHOLE request with
+ * "A message contains an unsupported field" (observed on device, intermittently:
+ * only upstreams that validate strictly complain). The backend that knows its wire
+ * format must project onto it instead of forwarding whatever it was handed, which
+ * also protects every future field the core may add.
+ *
+ * `reasoning_content` IS kept: this upstream (thinking mode) requires it echoed
+ * back, and rejecting a request for a missing one was a past failure mode. */
+static const char *const OPENAI_MESSAGE_FIELDS[] = {
+    "role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content",
+};
+
+static cJSON *openai_compatible_project_message(const cJSON *message)
+{
+    cJSON *projected = cJSON_CreateObject();
+
+    if (!projected || !cJSON_IsObject(message)) {
+        cJSON_Delete(projected);
+        return NULL;
+    }
+    for (size_t i = 0; i < sizeof(OPENAI_MESSAGE_FIELDS) / sizeof(OPENAI_MESSAGE_FIELDS[0]); i++) {
+        const cJSON *field = cJSON_GetObjectItemCaseSensitive(message, OPENAI_MESSAGE_FIELDS[i]);
+        cJSON *copy;
+
+        if (!field) {
+            continue;
+        }
+        copy = cJSON_Duplicate(field, true);
+        if (!copy) {
+            cJSON_Delete(projected);
+            return NULL;
+        }
+        cJSON_AddItemToObject(projected, OPENAI_MESSAGE_FIELDS[i], copy);
+    }
+    return projected;
+}
+
 static esp_err_t build_chat_body(const openai_compatible_backend_ctx_t *ctx,
                                  const claw_llm_model_profile_t *profile,
                                  const claw_llm_chat_request_t *request,
@@ -238,7 +278,7 @@ static esp_err_t build_chat_body(const openai_compatible_backend_ctx_t *ctx,
     system_msg = NULL;
 
     cJSON_ArrayForEach(item, request->messages) {
-        cJSON *dup = cJSON_Duplicate(item, true);
+        cJSON *dup = openai_compatible_project_message(item);
         if (!dup) {
             *out_error_message = dup_printf("Out of memory copying messages");
             cJSON_Delete(body);

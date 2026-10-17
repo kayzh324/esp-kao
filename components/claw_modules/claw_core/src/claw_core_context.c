@@ -389,7 +389,11 @@ static char *claw_core_bound_tool_output(const claw_core_request_t *request,
  * touched. Deliberately conservative: dropping recent in-turn detail makes the
  * model redo work it already did. Full content stays in the session.
  * Budget/keep/arg limits are per-tier (claw_tier.h). */
-#define CLAW_CORE_RUNTIME_OMITTED_NOTE "[older tool result omitted to bound context; full content is in the session history]"
+/* The note must name an action the model can take. "Full content is in the session
+ * history" was true but unusable - session logs are not task input - and it sent one
+ * real run hunting for content it could not recover. */
+#define CLAW_CORE_RUNTIME_OMITTED_NOTE \
+    "[older tool result omitted to bound context - run the same tool call again if you still need it]"
 
 static bool claw_core_message_has_tool_calls(const cJSON *message)
 {
@@ -438,7 +442,63 @@ static size_t claw_core_message_bytes(const cJSON *message)
     return total;
 }
 
-static void claw_core_shrink_message(cJSON *message)
+/* Which tool call produced this tool result, and with what path? Needed so the
+ * omission note can name a place the model can ACTUALLY go back to (added).
+ * The old note said "full content is in the session history", which is true but
+ * useless: session logs are not task input, and read_file results are never spilled
+ * to .toolout either. An agent that took the note at face value spent a long stretch
+ * of a real run hunting an original it could not recover. Telling it to re-read the
+ * path is one action it can always take. */
+static bool claw_core_find_producing_call(const cJSON *messages, const cJSON *message,
+                                          char *name_out, size_t name_size,
+                                          char *path_out, size_t path_size)
+{
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(message, "tool_call_id");
+    const cJSON *probe = NULL;
+
+    if (name_out && name_size) {
+        name_out[0] = '\0';
+    }
+    if (path_out && path_size) {
+        path_out[0] = '\0';
+    }
+    if (!cJSON_IsArray(messages) || !cJSON_IsString(id) || !id->valuestring ||
+            !name_out || name_size == 0) {
+        return false;
+    }
+    cJSON_ArrayForEach(probe, messages) {
+        const cJSON *calls = cJSON_GetObjectItemCaseSensitive(probe, "tool_calls");
+        const cJSON *call = NULL;
+
+        cJSON_ArrayForEach(call, calls) {
+            const cJSON *cid = cJSON_GetObjectItemCaseSensitive(call, "id");
+            const cJSON *fn = cJSON_GetObjectItemCaseSensitive(call, "function");
+            const cJSON *args = fn ? cJSON_GetObjectItemCaseSensitive(fn, "arguments") : NULL;
+            const cJSON *name = fn ? cJSON_GetObjectItemCaseSensitive(fn, "name") : NULL;
+
+            if (!cJSON_IsString(cid) || !cid->valuestring ||
+                    strcmp(cid->valuestring, id->valuestring) != 0) {
+                continue;
+            }
+            if (cJSON_IsString(name) && name->valuestring) {
+                strlcpy(name_out, name->valuestring, name_size);
+            }
+            if (path_out && path_size > 0 && cJSON_IsString(args) && args->valuestring) {
+                cJSON *parsed = cJSON_Parse(args->valuestring);
+                const cJSON *path = parsed ? cJSON_GetObjectItemCaseSensitive(parsed, "path") : NULL;
+
+                if (cJSON_IsString(path) && path->valuestring) {
+                    strlcpy(path_out, path->valuestring, path_size);
+                }
+                cJSON_Delete(parsed);
+            }
+            return name_out[0] != '\0';
+        }
+    }
+    return false;
+}
+
+static void claw_core_shrink_message(const cJSON *messages, cJSON *message)
 {
     const cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
     cJSON *content;
@@ -447,9 +507,22 @@ static void claw_core_shrink_message(cJSON *message)
     cJSON *call = NULL;
 
     if (cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0) {
+        char tool_name[32];
+        char tool_path[160];
+        char note[288];
+
         content = cJSON_GetObjectItemCaseSensitive(message, "content");
         if (cJSON_IsString(content)) {
-            cJSON_SetValuestring(content, CLAW_CORE_RUNTIME_OMITTED_NOTE);
+            if (claw_core_find_producing_call(messages, message, tool_name, sizeof(tool_name),
+                                              tool_path, sizeof(tool_path)) &&
+                    tool_path[0] && strcmp(tool_name, "read_file") == 0) {
+                snprintf(note, sizeof(note),
+                         "[older read of %s omitted to bound context - re-read that path if you "
+                         "still need it]", tool_path);
+                cJSON_SetValuestring(content, note);
+            } else {
+                cJSON_SetValuestring(content, CLAW_CORE_RUNTIME_OMITTED_NOTE);
+            }
         }
         return;
     }
@@ -761,7 +834,7 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t
             }
 
             before = claw_core_message_bytes(message);
-            claw_core_shrink_message(message);
+            claw_core_shrink_message(runtime_messages, message);
             after = claw_core_message_bytes(message);
             total -= (before > after) ? (before - after) : 0;
             if (is_tool_result && before > after) {
@@ -876,7 +949,7 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
         for (i = 0; i < count; i++) {
             /* Oldest first. claw_core_shrink_message is a no-op for user and
              * final-assistant messages, so the live instruction survives. */
-            claw_core_shrink_message(cJSON_GetArrayItem(messages, i));
+            claw_core_shrink_message(messages, cJSON_GetArrayItem(messages, i));
         }
     }
 

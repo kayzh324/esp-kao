@@ -114,8 +114,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "directory an app); throwaway scripts go in <data_root>/tmp/. " \
     "Do not read sessions/*.log, memory_records.jsonl, memory_index.json or MEMORY.md as task input - " \
     "they are the agent's own plumbing, not task material. " \
-    "Do not keep your own backup copies: write_file and edit_file save the previous version automatically " \
-    "and report its path, and restore_file brings it back. " \
+    "Do not keep duplicate backup copies: write_file and edit_file save the previous version automatically " \
+    "and report its path, and restore_file brings it back. But a file rewritten from inside a script is NOT " \
+    "saved - so before letting a script overwrite something you will need to compare against, copy_file it " \
+    "to tmp/ first. Reading it is not enough: the write replaces it and your reads get evicted. " \
     "For work that runs over many rounds, first pin_note your task card (goal, constraints, API notes, " \
     "draft outline) - it is replayed every round and survives context compaction. " \
     "Write code drafts to a file with write_file as soon as you have them; a draft that only lives in your " \

@@ -44,6 +44,11 @@ it, or for running an existing script once.
 - Running it (sync or async) and reading its output **is** the evidence. "The code looks right" is not.
 - For UI work the evidence is what appears on the panel.
 - Report intent and verification separately: what you *changed* vs what you *verified*.
+- **Keep the "before" when the check compares before and after** (heading unions, size deltas, diffs).
+  Having read it is not enough: the write replaces it, and the read gets evicted from context as the turn
+  grows. `copy_file` it to `tmp/` first, or extract the facts you need into a file before you rewrite.
+  Only `write_file`/`edit_file` snapshot the previous version automatically - a file rewritten from a
+  script is gone.
 
 ## 5. Multi-session programs keep four short docs
 

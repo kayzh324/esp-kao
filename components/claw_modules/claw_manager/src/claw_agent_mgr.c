@@ -43,6 +43,14 @@ static const char *TAG = "claw_agent_mgr";
  * clears RUNNING through the completion observer, so RUNNING+IDLE means the turn
  * never reported back (crashed task, dropped request). */
 #define CLAW_AGENT_MGR_REAPER_IDLE_STUCK_MS     120000
+/* idle-core reclamation (added): a completed subagent keeps a whole claw_core
+ * alive (task stack, queues, mutexes, LLM runtime) and occupies one of the few
+ * subagent slots. Only close_agent used to free it, so a parent that forgot to
+ * close past agents permanently lost capacity. The session on disk is the
+ * durable state, and send_agent_followup recreates the core, so reclaiming is
+ * lossless. The TTL is deliberately generous: it guards RAM, while slot pressure
+ * is handled immediately by the LRU reclaim in spawn_subagent. */
+#define CLAW_AGENT_MGR_IDLE_RECLAIM_MS          300000
 #define CLAW_AGENT_MGR_REAPER_TASK_STACK        CLAW_TIER_REAPER_STACK_SIZE
 #define CLAW_AGENT_MGR_REAPER_TASK_PRIO         4
 
@@ -133,6 +141,9 @@ typedef struct {
     bool stuck_reported;
     claw_core_agent_loop_phase_t last_phase;
     uint32_t phase_since_ms;
+    /* idle-core reclamation (added): when the last turn completed. 0 = not idle
+     * since boot/creation. Used for TTL reclaim and LRU slot reuse. */
+    uint32_t idle_since_ms;
     bool notify_pending;
     char pending_notify_text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
     claw_core_handle_t core;
@@ -164,6 +175,11 @@ typedef struct {
 } claw_agent_mgr_state_t;
 
 static claw_agent_mgr_state_t s_mgr = {0};
+
+static uint32_t claw_agent_mgr_now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx);
@@ -656,6 +672,7 @@ static esp_err_t claw_agent_mgr_start_agent_core(claw_agent_mgr_agent_t *agent)
     }
     ESP_GOTO_ON_ERROR(claw_core_start(agent->core), fail, TAG, "start agent core");
     agent->status = CLAW_AGENT_MGR_STATUS_IDLE;
+    agent->idle_since_ms = claw_agent_mgr_now_ms();
     return ESP_OK;
 
 fail:
@@ -961,6 +978,7 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
                  (summary->error_message && summary->error_message[0]) ? summary->error_message : "error");
     } else {
         agent->status = CLAW_AGENT_MGR_STATUS_IDLE;
+        agent->idle_since_ms = claw_agent_mgr_now_ms();
         agent->last_error[0] = '\0';
     }
     claw_agent_mgr_capture_route_locked(agent, &route, &notify_request_id);
@@ -975,6 +993,108 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
             agent->notify_pending = true;
         }
         claw_agent_mgr_unlock();
+    }
+}
+
+/* idle-core reclamation (added): a completed subagent otherwise keeps a whole
+ * claw_core alive for the rest of the boot. Destroying it is lossless because
+ * the agent record (id, session, type) and the session history stay durable;
+ * send_agent_followup recreates the core lazily. The caller must NOT hold the
+ * manager lock while the core is joined. */
+static esp_err_t claw_agent_mgr_release_core_at(size_t index)
+{
+    claw_agent_mgr_agent_t *agent;
+    claw_core_handle_t core = NULL;
+    char agent_id[CLAW_SESSION_MGR_ID_SIZE];
+    esp_err_t err;
+
+    agent_id[0] = '\0';
+    claw_agent_mgr_lock();
+    agent = &s_mgr.agents[index];
+    if (!agent->occupied || agent->role != CLAW_AGENT_MGR_ROLE_SUBAGENT ||
+            !agent->core || agent->closing || agent->notify_pending ||
+            agent->status != CLAW_AGENT_MGR_STATUS_IDLE) {
+        claw_agent_mgr_unlock();
+        return ESP_ERR_NOT_FOUND;
+    }
+    strlcpy(agent_id, agent->agent_id, sizeof(agent_id));
+    core = agent->core;
+    agent->core = NULL;
+    agent->closing = true;
+    agent->status = CLAW_AGENT_MGR_STATUS_CLOSED;
+    claw_agent_mgr_unlock();
+
+    err = claw_core_destroy(core);
+
+    claw_agent_mgr_lock();
+    agent = claw_agent_mgr_find_locked(agent_id);
+    if (agent && agent->closing && !agent->core) {
+        agent->closing = false;
+        if (err == ESP_OK) {
+            agent->status = CLAW_AGENT_MGR_STATUS_CLOSED;
+            agent->idle_since_ms = 0;
+        } else {
+            /* Stop failed, so destroy did not free anything. Keep the handle so a
+             * later sweep retries instead of leaking it. */
+            agent->core = core;
+            agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
+            snprintf(agent->last_error, sizeof(agent->last_error), "%s",
+                     esp_err_to_name(err));
+        }
+    }
+    claw_agent_mgr_unlock();
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "reclaimed idle subagent core id=%s", agent_id);
+    } else {
+        ESP_LOGW(TAG, "reclaim failed id=%s: %s", agent_id, esp_err_to_name(err));
+    }
+    return err;
+}
+
+/* Oldest idle subagent slot, or -1. Caller holds the lock. */
+static int claw_agent_mgr_oldest_idle_index_locked(void)
+{
+    int best = -1;
+    uint32_t best_ms = 0;
+
+    for (size_t i = 1; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
+        const claw_agent_mgr_agent_t *agent = &s_mgr.agents[i];
+
+        if (!agent->occupied || agent->role != CLAW_AGENT_MGR_ROLE_SUBAGENT ||
+                agent->status != CLAW_AGENT_MGR_STATUS_IDLE || !agent->core ||
+                agent->closing || agent->notify_pending || agent->idle_since_ms == 0) {
+            continue;
+        }
+        if (best < 0 || (int32_t)(agent->idle_since_ms - best_ms) < 0) {
+            best = (int)i;
+            best_ms = agent->idle_since_ms;
+        }
+    }
+    return best;
+}
+
+static void claw_agent_mgr_reclaim_idle_cores_once(void)
+{
+    uint32_t now = claw_agent_mgr_now_ms();
+
+    for (size_t i = 1; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
+        bool due = false;
+
+        claw_agent_mgr_lock();
+        {
+            const claw_agent_mgr_agent_t *agent = &s_mgr.agents[i];
+
+            due = agent->occupied && agent->role == CLAW_AGENT_MGR_ROLE_SUBAGENT &&
+                  agent->status == CLAW_AGENT_MGR_STATUS_IDLE && agent->core &&
+                  !agent->closing && !agent->notify_pending &&
+                  agent->idle_since_ms != 0 &&
+                  (uint32_t)(now - agent->idle_since_ms) >= CLAW_AGENT_MGR_IDLE_RECLAIM_MS;
+        }
+        claw_agent_mgr_unlock();
+        if (due) {
+            (void)claw_agent_mgr_release_core_at(i);
+        }
     }
 }
 
@@ -1067,6 +1187,7 @@ static void claw_agent_mgr_reaper_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(CLAW_AGENT_MGR_REAPER_PERIOD_MS));
         claw_agent_mgr_reap_stuck_once();
+        claw_agent_mgr_reclaim_idle_cores_once();
     }
 }
 
@@ -1196,6 +1317,7 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
     claw_core_request_t request = {0};
     char agent_id[CLAW_SESSION_MGR_ID_SIZE] = {0};
     size_t agent_id_len = 0;
+    const char *subagent_type = (agent_type && agent_type[0]) ? agent_type : "subagent";
     esp_err_t err;
 
     if (!claw_agent_mgr_ctx_is_root_agent(parent_ctx) ||
@@ -1241,8 +1363,38 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
         return err;
     }
 
+    /* Persist the type next to the child id (added): the runtime slot may be
+     * reclaimed for another agent, and lazy resume must restore the same
+     * type-specific prompt instead of falling back to "subagent". Non-fatal:
+     * a missing type only costs the specialized prompt. */
+    {
+        esp_err_t type_err = claw_session_mgr_set_subagent_type(parent_ctx->session_id,
+                                                                agent_id,
+                                                                subagent_type);
+
+        if (type_err != ESP_OK) {
+            ESP_LOGW(TAG, "persist agent_type failed for %s: %s",
+                     agent_id, esp_err_to_name(type_err));
+        }
+    }
+
     claw_agent_mgr_lock();
     agent = claw_agent_mgr_alloc_locked(CLAW_AGENT_MGR_ROLE_SUBAGENT);
+    if (!agent) {
+        /* Capacity policy (added): reclaim the oldest idle subagent before
+         * failing. Its core is lossless to drop (session stays on disk), while
+         * refusing here would make the parent's only option "close something by
+         * hand" even though a finished agent is sitting on a slot. */
+        int victim = claw_agent_mgr_oldest_idle_index_locked();
+
+        if (victim >= 0) {
+            claw_agent_mgr_unlock();
+            ESP_LOGI(TAG, "spawn at capacity: reclaiming idle agent slot %d", victim);
+            (void)claw_agent_mgr_release_core_at((size_t)victim);
+            claw_agent_mgr_lock();
+            agent = claw_agent_mgr_alloc_locked(CLAW_AGENT_MGR_ROLE_SUBAGENT);
+        }
+    }
     if (!agent) {
         claw_agent_mgr_unlock();
         return ESP_ERR_NO_MEM;
@@ -1267,8 +1419,7 @@ esp_err_t claw_agent_mgr_spawn_subagent(const claw_cap_call_context_t *parent_ct
             parent_ctx->target_chat_id ? parent_ctx->target_chat_id :
             (parent_ctx->chat_id ? parent_ctx->chat_id : ""),
             sizeof(agent->parent_target_chat_id));
-    strlcpy(agent->agent_type, agent_type && agent_type[0] ? agent_type : "subagent",
-            sizeof(agent->agent_type));
+    strlcpy(agent->agent_type, subagent_type, sizeof(agent->agent_type));
 
     err = claw_agent_mgr_start_subagent_locked(agent);
     if (err == ESP_OK) {
@@ -1350,7 +1501,19 @@ static esp_err_t claw_agent_mgr_find_or_lazy_create_subagent_locked(const claw_c
             ctx->target_chat_id ? ctx->target_chat_id :
             (ctx->chat_id ? ctx->chat_id : ""),
             sizeof(agent->parent_target_chat_id));
-    strlcpy(agent->agent_type, "subagent", sizeof(agent->agent_type));
+    {
+        /* Restore the type persisted at spawn time (added): without this a
+         * resumed bench/build/recon agent silently became a generic subagent
+         * and lost its specialized system prompt. */
+        char stored_type[CLAW_SESSION_MGR_AGENT_TYPE_MAX] = {0};
+
+        if (claw_session_mgr_get_subagent_type(ctx->session_id, agent_id,
+                                               stored_type, sizeof(stored_type)) != ESP_OK ||
+                !stored_type[0]) {
+            strlcpy(stored_type, "subagent", sizeof(stored_type));
+        }
+        strlcpy(agent->agent_type, stored_type, sizeof(agent->agent_type));
+    }
     *out_agent = agent;
     return ESP_OK;
 }

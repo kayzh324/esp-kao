@@ -42,6 +42,10 @@ typedef struct {
     uint32_t next_suffix;
     size_t child_count;
     char child_ids[CLAW_SESSION_MGR_SUBAGENT_MAX][CLAW_SESSION_MGR_ID_SIZE];
+    /* Persistent agent type per child (added): keeps the type-specific prompt
+     * recoverable after the runtime slot is closed, reused, or the device
+     * reboots. Empty/defaults to "subagent" for maps written by older builds. */
+    char child_types[CLAW_SESSION_MGR_SUBAGENT_MAX][CLAW_SESSION_MGR_AGENT_TYPE_MAX];
 } claw_session_mgr_subagent_map_t;
 
 static claw_session_mgr_state_t s_session_mgr = {0};
@@ -704,6 +708,7 @@ static esp_err_t claw_session_mgr_write_subagent_map_locked(const claw_session_m
     char path[CLAW_SESSION_MGR_PATH_SIZE];
     cJSON *root = NULL;
     cJSON *children = NULL;
+    cJSON *types = NULL;
     char *json = NULL;
     FILE *file = NULL;
     esp_err_t err;
@@ -723,15 +728,18 @@ static esp_err_t claw_session_mgr_write_subagent_map_locked(const claw_session_m
 
     root = cJSON_CreateObject();
     children = cJSON_CreateArray();
-    if (!root || !children) {
+    types = cJSON_CreateObject();
+    if (!root || !children || !types) {
         cJSON_Delete(root);
         cJSON_Delete(children);
+        cJSON_Delete(types);
         return ESP_ERR_NO_MEM;
     }
     if (!cJSON_AddStringToObject(root, "parent_session_id", map->parent_session_id) ||
             !cJSON_AddNumberToObject(root, "next_suffix", map->next_suffix)) {
         cJSON_Delete(root);
         cJSON_Delete(children);
+        cJSON_Delete(types);
         return ESP_ERR_NO_MEM;
     }
     for (size_t i = 0; i < map->child_count; i++) {
@@ -740,12 +748,22 @@ static esp_err_t claw_session_mgr_write_subagent_map_locked(const claw_session_m
         if (!item) {
             cJSON_Delete(root);
             cJSON_Delete(children);
+            cJSON_Delete(types);
             return ESP_ERR_NO_MEM;
         }
         cJSON_AddItemToArray(children, item);
+        if (map->child_types[i][0] &&
+                !cJSON_AddStringToObject(types, map->child_ids[i], map->child_types[i])) {
+            cJSON_Delete(root);
+            cJSON_Delete(children);
+            cJSON_Delete(types);
+            return ESP_ERR_NO_MEM;
+        }
     }
     cJSON_AddItemToObject(root, "child_ids", children);
     children = NULL;
+    cJSON_AddItemToObject(root, "child_types", types);
+    types = NULL;
 
     json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -778,6 +796,7 @@ static esp_err_t claw_session_mgr_load_subagent_map_locked(const char *parent_se
     cJSON *root = NULL;
     cJSON *item = NULL;
     cJSON *children = NULL;
+    cJSON *types = NULL;
     esp_err_t err;
 
     if (!parent_session_id || !parent_session_id[0] || !out_map) {
@@ -858,6 +877,21 @@ static esp_err_t claw_session_mgr_load_subagent_map_locked(const char *parent_se
         }
         out_map->child_count = count;
     }
+
+    /* Types are optional: maps written before this field exist, and a child may
+     * have been allocated before its type was known. (added) */
+    types = cJSON_GetObjectItemCaseSensitive(root, "child_types");
+    for (size_t i = 0; i < out_map->child_count; i++) {
+        const cJSON *type = cJSON_IsObject(types) ?
+                            cJSON_GetObjectItemCaseSensitive(types, out_map->child_ids[i]) : NULL;
+
+        if (cJSON_IsString(type) && type->valuestring && type->valuestring[0]) {
+            strlcpy(out_map->child_types[i], type->valuestring,
+                    sizeof(out_map->child_types[i]));
+        } else {
+            strlcpy(out_map->child_types[i], "subagent", sizeof(out_map->child_types[i]));
+        }
+    }
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -936,7 +970,9 @@ esp_err_t claw_session_mgr_alloc_subagent_session_id(const char *parent_session_
         }
     } while (claw_session_mgr_subagent_map_has_child(&map, candidate));
 
-    strlcpy(map.child_ids[map.child_count++], candidate, sizeof(map.child_ids[0]));
+    strlcpy(map.child_ids[map.child_count], candidate, sizeof(map.child_ids[0]));
+    strlcpy(map.child_types[map.child_count], "subagent", sizeof(map.child_types[0]));
+    map.child_count++;
     err = claw_session_mgr_write_subagent_map_locked(&map);
     xSemaphoreGiveRecursive(s_session_mgr.mutex);
     if (err != ESP_OK) {
@@ -1054,9 +1090,11 @@ esp_err_t claw_session_mgr_delete_subagent_session(const char *parent_session_id
     if (err == ESP_OK) {
         for (size_t i = child_index; i + 1 < map.child_count; i++) {
             strlcpy(map.child_ids[i], map.child_ids[i + 1], sizeof(map.child_ids[i]));
+            strlcpy(map.child_types[i], map.child_types[i + 1], sizeof(map.child_types[i]));
         }
         map.child_count--;
         map.child_ids[map.child_count][0] = '\0';
+        map.child_types[map.child_count][0] = '\0';
         err = claw_session_mgr_write_subagent_map_locked(&map);
     }
     xSemaphoreGiveRecursive(s_session_mgr.mutex);
@@ -1072,6 +1110,71 @@ esp_err_t claw_session_mgr_delete_subagent_session(const char *parent_session_id
                  deleted_any ? "true" : "false");
     }
 
+    return err;
+}
+
+esp_err_t claw_session_mgr_set_subagent_type(const char *parent_session_id,
+                                             const char *subagent_id,
+                                             const char *agent_type)
+{
+    claw_session_mgr_subagent_map_t map;
+    size_t child_index = CLAW_SESSION_MGR_SUBAGENT_MAX;
+    char type[CLAW_SESSION_MGR_AGENT_TYPE_MAX];
+    esp_err_t err;
+
+    if (!parent_session_id || !parent_session_id[0] ||
+            !subagent_id || !subagent_id[0] ||
+            !agent_type || !agent_type[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_session_mgr.configured || !s_session_mgr.mutex) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    strlcpy(type, agent_type, sizeof(type));
+
+    xSemaphoreTakeRecursive(s_session_mgr.mutex, portMAX_DELAY);
+    err = claw_session_mgr_load_subagent_map_locked(parent_session_id, &map);
+    if (err == ESP_OK) {
+        err = claw_session_mgr_subagent_map_find_child(&map, subagent_id, &child_index);
+    }
+    if (err == ESP_OK && strcmp(map.child_types[child_index], type) != 0) {
+        strlcpy(map.child_types[child_index], type, sizeof(map.child_types[child_index]));
+        err = claw_session_mgr_write_subagent_map_locked(&map);
+    }
+    xSemaphoreGiveRecursive(s_session_mgr.mutex);
+    return err;
+}
+
+esp_err_t claw_session_mgr_get_subagent_type(const char *parent_session_id,
+                                             const char *subagent_id,
+                                             char *out_type,
+                                             size_t out_size)
+{
+    claw_session_mgr_subagent_map_t map;
+    size_t child_index = CLAW_SESSION_MGR_SUBAGENT_MAX;
+    esp_err_t err;
+
+    if (!parent_session_id || !parent_session_id[0] ||
+            !subagent_id || !subagent_id[0] ||
+            !out_type || out_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out_type[0] = '\0';
+    if (!s_session_mgr.configured || !s_session_mgr.mutex) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTakeRecursive(s_session_mgr.mutex, portMAX_DELAY);
+    err = claw_session_mgr_load_subagent_map_locked(parent_session_id, &map);
+    if (err == ESP_OK) {
+        err = claw_session_mgr_subagent_map_find_child(&map, subagent_id, &child_index);
+    }
+    if (err == ESP_OK) {
+        strlcpy(out_type,
+                map.child_types[child_index][0] ? map.child_types[child_index] : "subagent",
+                out_size);
+    }
+    xSemaphoreGiveRecursive(s_session_mgr.mutex);
     return err;
 }
 

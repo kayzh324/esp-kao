@@ -1393,7 +1393,7 @@ TEST_CASE("concurrent send inspect and close access remains protected",
     vSemaphoreDelete(race_ctx.done_sem);
 }
 
-TEST_CASE("subagent capacity returns clear error and close preserves runtime capacity",
+TEST_CASE("subagent capacity reclaims an idle slot and close preserves runtime capacity",
           "[claw_agent_mgr][capacity]")
 {
     claw_cap_call_context_t ctx = test_root_ctx("chat:capacity:parent");
@@ -1416,12 +1416,16 @@ TEST_CASE("subagent capacity returns clear error and close preserves runtime cap
         free(output);
     }
 
+    /* Idle slots are reclaimable (added): the over-capacity spawn closes the
+     * oldest completed subagent instead of failing. Its session stays on disk,
+     * so a later followup can still resume it. */
     output = call_cap_and_dup_output("spawn_agent",
                                      "{\"prompt\":\"one too many\"}",
                                      &ctx,
-                                     ESP_ERR_NO_MEM);
-    TEST_ASSERT_NOT_NULL(strstr(output, "ESP_ERR_NO_MEM"));
+                                     ESP_OK);
+    assert_json_string_field(output, "agent_id", new_id, sizeof(new_id));
     free(output);
+    TEST_ASSERT_EQUAL(ESP_OK, claw_agent_mgr_close_agent(&ctx, new_id));
 
     TEST_ASSERT_EQUAL_UINT32(CONFIG_CLAW_AGENT_MGR_MAX_SUBAGENTS, created);
     TEST_ASSERT_EQUAL(ESP_OK, claw_agent_mgr_close_agent(&ctx, ids[0]));
@@ -1442,6 +1446,45 @@ TEST_CASE("subagent capacity returns clear error and close preserves runtime cap
     for (size_t i = 0; i < created; i++) {
         close_agent_if_set(&ctx, ids[i]);
     }
+    free(ids);
+}
+
+TEST_CASE("spawn returns NO_MEM when every subagent slot is running",
+          "[claw_agent_mgr][capacity]")
+{
+    claw_cap_call_context_t ctx = test_root_ctx("chat:capacity:running");
+    char (*ids)[CLAW_SESSION_MGR_ID_SIZE] = NULL;
+    size_t created = 0;
+    char *output = NULL;
+
+    ensure_runtime_ready();
+    ids = calloc(CONFIG_CLAW_AGENT_MGR_MAX_SUBAGENTS, CLAW_SESSION_MGR_ID_SIZE);
+    TEST_ASSERT_NOT_NULL(ids);
+
+    /* Hold every child inside the backend so no slot becomes IDLE/reclaimable. */
+    s_backend_mode = TEST_BACKEND_MODE_WAIT_FOR_ABORT;
+    for (size_t i = 0; i < CONFIG_CLAW_AGENT_MGR_MAX_SUBAGENTS; i++) {
+        output = call_cap_and_dup_output("spawn_agent",
+                                         "{\"prompt\":\"running child\"}",
+                                         &ctx,
+                                         ESP_OK);
+        assert_json_string_field(output, "agent_id", ids[created], sizeof(ids[created]));
+        created++;
+        free(output);
+    }
+
+    output = call_cap_and_dup_output("spawn_agent",
+                                     "{\"prompt\":\"no idle slot\"}",
+                                     &ctx,
+                                     ESP_ERR_NO_MEM);
+    TEST_ASSERT_NOT_NULL(strstr(output, "ESP_ERR_NO_MEM"));
+    free(output);
+
+    /* Closing aborts the in-flight backend call. */
+    for (size_t i = 0; i < created; i++) {
+        close_agent_if_set(&ctx, ids[i]);
+    }
+    s_backend_mode = TEST_BACKEND_MODE_FINAL;
     free(ids);
 }
 

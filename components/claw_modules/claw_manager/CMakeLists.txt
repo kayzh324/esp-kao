@@ -8,5 +8,6 @@ idf_component_register(
         claw_cap
         claw_core
         claw_tier
+        esp_timer
         freertos
 )

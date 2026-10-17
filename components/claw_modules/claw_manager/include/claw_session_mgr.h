@@ -19,6 +19,7 @@ extern "C" {
 #define CLAW_SESSION_MGR_KEY_SIZE     160
 #define CLAW_SESSION_MGR_ID_SIZE      256
 #define CLAW_SESSION_MGR_ALIAS_MAX    32
+#define CLAW_SESSION_MGR_AGENT_TYPE_MAX 32
 #define CLAW_SESSION_MGR_MAX_SESSIONS 32
 
 typedef enum {
@@ -74,6 +75,16 @@ esp_err_t claw_session_mgr_list_subagent_sessions(const char *parent_session_id,
 esp_err_t claw_session_mgr_delete_subagent_session(const char *parent_session_id,
                                                    const char *subagent_id,
                                                    bool *out_deleted_any);
+/* Agent type persistence (added): a subagent's runtime slot can be reclaimed
+ * and reused while its session stays resumable, so the type-specific prompt
+ * must live outside the slot. Stored in the subagent map keyed by child id. */
+esp_err_t claw_session_mgr_set_subagent_type(const char *parent_session_id,
+                                             const char *subagent_id,
+                                             const char *agent_type);
+esp_err_t claw_session_mgr_get_subagent_type(const char *parent_session_id,
+                                             const char *subagent_id,
+                                             char *out_type,
+                                             size_t out_size);
 esp_err_t claw_session_mgr_new_chat_session(uint32_t agent_id,
                                             const char *source_channel,
                                             const char *chat_id,

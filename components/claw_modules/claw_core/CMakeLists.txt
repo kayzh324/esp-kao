@@ -10,6 +10,7 @@ idf_component_register(
         "src/claw_core_messages.c"
         "src/claw_core_context_persist.c"
         "src/claw_core_utils.c"
+        "src/claw_core_context_window.c"
         "src/claw_task.c"
         "src/claw_core_llm.c"
         "src/llm/claw_llm_runtime.c"

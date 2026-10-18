@@ -132,6 +132,9 @@ esp_err_t claw_core_create(const claw_core_config_t *config, claw_core_handle_t 
         return ESP_ERR_NO_MEM;
     }
 
+    /* A0: derive dynamic window from current heap state */
+    claw_core_window_init();
+
     llm_config.api_key = config->api_key;
     llm_config.backend_type = config->backend_type;
     llm_config.model = config->model;

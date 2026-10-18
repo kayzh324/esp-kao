@@ -169,6 +169,11 @@ esp_err_t claw_core_response_receive_for(claw_core_state_t *core,
                                          claw_core_response_t *response,
                                          uint32_t timeout_ms);
 
+/* A0: dynamic window derivation — replaces fixed tier constants */
+void claw_core_window_init(void);
+void claw_core_window_update(void);
+size_t claw_core_window_get(void);
+
 void claw_core_free_cached_contexts(claw_core_cached_context_t *contexts, size_t count);
 esp_err_t claw_core_collect_request_start_only_contexts(
     claw_core_state_t *core,

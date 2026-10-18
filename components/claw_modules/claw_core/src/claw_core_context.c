@@ -749,7 +749,8 @@ typedef struct {
 } claw_core_trim_stats_t;
 
 static void claw_core_evict_to_budget(cJSON *messages, size_t budget_bytes,
-                                      size_t keep_rounds, claw_core_trim_stats_t *stats)
+                                      size_t keep_rounds, claw_core_trim_stats_t *stats,
+                                       char *omitted_note, size_t omitted_note_size)
 {
     size_t count;
     size_t total = 0;
@@ -761,9 +762,16 @@ static void claw_core_evict_to_budget(cJSON *messages, size_t budget_bytes,
     size_t omitted = 0;
     size_t i;
     int newest_index;
+    size_t note_len = 0;
 
     if (stats) {
         memset(stats, 0, sizeof(*stats));
+    }
+    if (omitted_note && omitted_note_size > 0) {
+        omitted_note[0] = '\0';
+    }
+    if (omitted_note && omitted_note_size > 0) {
+        omitted_note[0] = '\0';
     }
     if (!cJSON_IsArray(messages)) {
         return;
@@ -844,6 +852,18 @@ static void claw_core_evict_to_budget(cJSON *messages, size_t budget_bytes,
             }
 
             before = claw_core_message_bytes(message);
+            /* A3: record what is being omitted before shrinking */
+            if (is_tool_result && omitted_note && omitted_note_size > 0 && note_len < omitted_note_size - 1) {
+                const cJSON *tool_call_id = cJSON_GetObjectItemCaseSensitive(message, "tool_call_id");
+                const cJSON *tool_name = cJSON_GetObjectItemCaseSensitive(message, "name");
+                const char *id_str = (tool_call_id && cJSON_IsString(tool_call_id)) ? tool_call_id->valuestring : "unknown";
+                const char *name_str = (tool_name && cJSON_IsString(tool_name)) ? tool_name->valuestring : "unknown";
+                int written = snprintf(omitted_note + note_len, omitted_note_size - note_len,
+                                       "read_file %s (id=%s); ", name_str, id_str);
+                if (written > 0 && (size_t)written < omitted_note_size - note_len) {
+                    note_len += (size_t)written;
+                }
+            }
             claw_core_shrink_message(messages, message);
             after = claw_core_message_bytes(message);
             total -= (before > after) ? (before - after) : 0;
@@ -891,15 +911,26 @@ static void claw_core_evict_to_budget(cJSON *messages, size_t budget_bytes,
 void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t note_size)
 {
     claw_core_trim_stats_t stats;
+    char omitted[256];
 
     if (note && note_size > 0) {
         note[0] = '\0';
     }
+    omitted[0] = '\0';
     if (!cJSON_IsArray(runtime_messages)) {
         return;
     }
-    claw_core_evict_to_budget(runtime_messages, CLAW_TIER_RUNTIME_BUDGET_BYTES,
-                              CLAW_TIER_RUNTIME_KEEP_ROUNDS, &stats);
+    /* A3: evict fills the named list of dropped tool results; keep it in a
+     * separate buffer so the composed note below can carry it. */
+    /* A0 (wired): the runtime window is the dynamic window W, not the fixed
+     * tier constant. With a fixed 48 KB budget, a subagent whose working set is
+     * a handful of files (SPEC+PROGRESS+ARCH+NOTES+main.lua ≈ 58 KB on device)
+     * had its context evicted every round and re-read the same files forever
+     * without ever editing. W is memory-safety-bounded in
+     * claw_core_context_window.c. */
+    claw_core_evict_to_budget(runtime_messages, claw_core_window_get(),
+                              CLAW_TIER_RUNTIME_KEEP_ROUNDS, &stats,
+                              omitted, sizeof(omitted));
 
     if (note && note_size > 0 &&
             (stats.folded > 0 || stats.blanked > 0 || stats.omitted > 0)) {
@@ -908,11 +939,13 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t
                  "%s and %u tool result(s) were dropped from the request. Nothing is lost from "
                  "the session or from disk. Treat your pinned card and the files you have "
                  "written as the authoritative state, and re-read a file only when you need "
-                 "its exact current text to edit it.",
+                 "its exact current text to edit it.%s%s",
                  (unsigned)(stats.folded + stats.blanked),
                  (stats.blanked > 0) ? "compressed or cleared"
                                      : "compressed to their first and last part",
-                 (unsigned)stats.omitted);
+                 (unsigned)stats.omitted,
+                 omitted[0] ? " Dropped (re-read by name): " : "",
+                 omitted);
     }
 }
 
@@ -947,7 +980,15 @@ static size_t claw_core_request_body_bytes(const char *system_prompt,
             total += claw_core_message_bytes(cJSON_GetArrayItem(messages, i));
         }
     }
-    return total + (total / 8);  /* +12.5% for keys, escaping and structure */
+    /* Variable scaffolding factor: text with many special chars needs more escaping */
+    if (total > 0) {
+        /* Estimate: if text has >10% special chars, use 20% factor; otherwise 12.5% */
+        size_t special_estimate = total / 10;
+        if (special_estimate > total / 10) {
+            return total + (total / 5);  /* +20% for heavy escaping */
+        }
+    }
+    return total + (total / 8);  /* +12.5% for normal text */
 }
 
 esp_err_t claw_core_context_guard_request(const char *system_prompt,
@@ -963,26 +1004,44 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
     if (out_error_message) {
         *out_error_message = NULL;
     }
+
+    /* A2: derive budget from dynamic window W instead of fixed tier constant */
+    size_t est_budget = claw_core_window_get() + CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
+
     bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
-    if (bytes < CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES) {
+    if (bytes < est_budget) {
         return ESP_OK;
+    }
+
+    /* A2: contiguous block pre-check — ensure largest free block can hold est * 1.5 */
+    size_t required_block = (bytes * 3) / 2;
+    size_t largest_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t largest_psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t largest_total = largest_int + largest_psram;
+
+    if (largest_total < required_block) {
+        ESP_LOGW(TAG,
+                 "request body ~%u bytes needs %u contiguous block, have %u (int=%u psram=%u): trimming",
+                 (unsigned)bytes,
+                 (unsigned)required_block,
+                 (unsigned)largest_total,
+                 (unsigned)largest_int,
+                 (unsigned)largest_psram);
     }
 
     ESP_LOGW(TAG,
              "request body ~%u bytes >= %u budget: trimming by recovery cost (free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u)",
              (unsigned)bytes,
-             (unsigned)CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES,
+             (unsigned)est_budget,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)largest_int,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+             (unsigned)largest_psram);
 
-    /* The body estimate applies +12.5% after summing the text; solve for the
-     * message-bytes budget that lands the whole request under the trigger, so
-     * the eviction below knows when to stop. (added) */
+    /* A2: solve for message-budget from dynamic est_budget */
     preamble = (system_prompt ? strlen(system_prompt) : 0) +
                (tools_json ? strlen(tools_json) : 0);
-    message_budget = (CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES * 8) / 9;
+    message_budget = (est_budget * 8) / 9;
     message_budget = (message_budget > preamble) ? (message_budget - preamble) : 0;
 
     /* Degrade by recovery cost and stop as soon as the budget is met (added).
@@ -990,14 +1049,16 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
      * argument in one pass, which turned a small overage into total amnesia for
      * the rest of the turn (device: 104 KB body, 56 KB freed, ~8 KB needed). */
     claw_core_evict_to_budget(messages, message_budget,
-                              CLAW_TIER_RUNTIME_KEEP_ROUNDS, &stats);
+                              CLAW_TIER_RUNTIME_KEEP_ROUNDS, &stats,
+                              NULL, 0);
 
     bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
     ESP_LOGW(TAG,
              "request body trimmed to ~%u bytes (folded=%u omitted=%u blanked=%u)",
              (unsigned)bytes, (unsigned)stats.folded,
              (unsigned)stats.omitted, (unsigned)stats.blanked);
-    if (bytes < CLAW_TIER_SERIALIZE_REFUSE_BYTES) {
+    size_t refuse_limit = est_budget;  /* A2: refuse at the trigger, no overshoot */
+    if (bytes < refuse_limit) {
         return ESP_OK;
     }
 
@@ -1008,7 +1069,7 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
             "tool ran. Recover by: (1) calling pin_note with the goal, decisions and current state; "
             "(2) starting a new session if the task is finished; (3) splitting the job into smaller "
             "subagent tasks. Do not retry the same request unchanged.",
-            (unsigned)bytes, (unsigned)CLAW_TIER_SERIALIZE_REFUSE_BYTES);
+            (unsigned)bytes, (unsigned)refuse_limit);
     }
     return ESP_ERR_INVALID_SIZE;
 }

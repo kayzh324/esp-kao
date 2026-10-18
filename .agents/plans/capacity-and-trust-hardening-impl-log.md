@@ -259,3 +259,63 @@ tool call counts: {'read_file': 59, 'grep_files': 1}     ← 0 次 edit_file / w
   **可能损坏 edit 调用**，需一并评估。
 - 待复测：同一 compass S-B 任务下，build 子 agent 是否开始出现 `edit_file`。
 
+---
+
+## 10. 追加（同日）：长程工作的读写比例与"每轮 trim"日志
+
+### 10.1 会话分析（`s_chat_web_w-mv830fpa-3bnp_53e01e03.log`，1.3 MB，build 子 agent）
+
+> 下载备注：设备 HTTP 文件下载在 SD 读失败时会中途截断（`http_server_files_api.c` 的
+> chunked 流未终止）。多次重试只取到 ~1.16 MB / 1.37 MB（≈85%），尾部若干轮缺失；
+> 已足够定性。
+
+会话含**两个阶段**（同一 `subagent_01` 会话 id 跨运行追加）：
+
+| 阶段 | 记录区间 | read-ish | write-ish | exec(lua) | read:write | main.lua 读 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **A 修复前**（旧死循环） | 0–117 | 60 | **0** | 0 | 60:0 | 28 |
+| **B 修复后**（真实推进） | 118–299 | 43 | **15** | 32 | **2.9** | 14 |
+
+阶段 A 是 §9 的死循环（SPEC/PROGRESS/ARCH/NOTES/main.lua 整读循环 7 轮，0 写）。
+阶段 B 才是本次成果：`activate_skill`→定向 `grep`→**小切片 `read_file`**（如 `off=180 lim=40`）
+→`write_file`（tmp 脚本）→`lua_run_script_async`/`lua_get_async_job`（**32 次设备实测**）
+→`edit_file main.lua`×3→写 `SB_B*_report.md`。
+
+**结论**：
+1. 全量 read:write=7.85 是**被阶段 A 的旧死循环拉高的**；阶段 B 实际为 **2.9**。
+2. 阶段 B 的读是**手术式、必要的**（编辑前取精确文本 + 定向 grep 定位），
+   **不是硬件窗口逐出造成的重读**。且见 10.2：trim 日志 `omitted=0` —— **没有任何工具结果被丢**。
+
+### 10.2 "每轮 trim"日志的根因
+
+```
+W request body ~352881 bytes >= 294912 budget: trimming by recovery cost (free_int=126615 largest_int=63488 free_spiram=1463212 largest_spiram=983040)
+W request body trimmed to ~294252 bytes (folded=7 omitted=0 blanked=0)
+```
+
+- `294912 = 288 KB = W(256 KB) + preamble(32 KB)`。
+- 请求体 `= preamble + 回放历史(replay) + 运行时窗口`，而 **A2 的 `est_budget` 只加了 `W + preamble`，
+  漏掉了回放历史项**（原 `CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES` 公式里是有
+  `CLAW_TIER_PROJECT_TRIGGER_CHARS` 的）。于是只要回放历史存在，总量必然 > 预算 ⇒ **每轮都 trim**。
+- `folded=7 omitted=0 blanked=0`：只折叠了 reasoning（有损：保留首尾），**未丢任何工具结果/文件** ⇒
+  说明重读**不是**数据被逐出造成的。
+
+### 10.3 修复
+
+`claw_core_context.c`：闸门总预算补回回放历史项：
+
+```c
+    size_t est_budget = claw_core_window_get() +
+                        CLAW_TIER_PROJECT_TRIGGER_CHARS +      /* 回放历史（原缺失项） */
+                        CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
+```
+
+`W(256K) + 48K + 32K = 336 KB`，覆盖 `preamble + replay + runtime` 三项，闸门不再每轮误触发。
+（已 build + flash。）
+
+### 10.4 结论与建议
+
+- **重读必要性**：阶段 B 的读是必要的（精确编辑 + 设备实测闭环）；窗口**没有**在逐出数据。
+- 遗留可优化项：`CLAW_TIER_RUNTIME_ARG_MAX_BYTES`(200) 与 `CLAW_TIER_TOOL_RESULT_MAX_BYTES`(8 KB)
+  仍为固定值（§9.4）；`CLAW_CTX_W_CEILING`(256 KB) 是否上调需按 PSRAM 最大连续块与基准任务定。
+

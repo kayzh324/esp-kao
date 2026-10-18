@@ -1005,8 +1005,14 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
         *out_error_message = NULL;
     }
 
-    /* A2: derive budget from dynamic window W instead of fixed tier constant */
-    size_t est_budget = claw_core_window_get() + CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
+    /* A2: total budget = runtime window W + replayed history + preamble.
+     * The request body is preamble + replayed session history + runtime window;
+     * an earlier version summed only (W + preamble) and so tripped the guard on
+     * every round once the replayed history was also present, folding reasoning
+     * each round for no memory reason. All three parts must be in the sum. */
+    size_t est_budget = claw_core_window_get() +
+                        CLAW_TIER_PROJECT_TRIGGER_CHARS +
+                        CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
 
     bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
     if (bytes < est_budget) {

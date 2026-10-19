@@ -403,6 +403,10 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
 
     status_code = esp_http_client_get_status_code(client);
     ESP_LOGD(TAG, "HTTP status=%d", status_code);
+    /* Report the status even when it is not 200 (added): the retry policy needs to
+     * know whether a gateway answered with a retryable 5xx/429 or rejected the
+     * request with a 4xx. 0 means no response arrived at all. */
+    out_response->status_code = status_code;
     if (status_code != 200) {
         err = ESP_FAIL;
         *out_error_message = parse_error_message_body(buffer.data, status_code);
@@ -410,7 +414,6 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
         goto cleanup;
     }
 
-    out_response->status_code = status_code;
     out_response->body = buffer.data;
     buffer.data = NULL;
     err = ESP_OK;

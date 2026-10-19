@@ -859,6 +859,11 @@ static esp_err_t anthropic_chat(void *backend_ctx,
     free(url);
     free(post_data);
     if (err != ESP_OK) {
+        /* Surface the HTTP status (0 = no response arrived) so the agent loop can
+         * tell a retryable gateway 5xx/429 from a 4xx. */
+        if (out_response) {
+            out_response->http_status = http_response.status_code;
+        }
         return err;
     }
 

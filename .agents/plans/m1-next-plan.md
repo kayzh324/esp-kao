@@ -128,7 +128,6 @@
 - **优先级由你定**：你的板子（PSRAM + SD）不受影响，但这两条决定了"弱硬件兼容"能覆盖到哪些板型。
 
 ### C8 — 硬件信息暴露（用户新增需求）✅ **已实施（见 §12）**
-
 - **需求**：agent 想拿硬件细节（芯片型号、I2C 地址）没有好途径；这些事实手写在 `board_info.yaml`
   的 description 里，而那个文件不在"先读路径"上；`board_devices.yaml` 明明有却没有暴露。
 - **根因**：数据在生成链路里被丢两次——① bmgr 的 `gen_board_metadata.yaml` 只保留 type/peripherals，
@@ -302,7 +301,6 @@ flash timing tuning 并 RTCWDT 重启）、**开启 PSRAM**（否则 spawn 准�
 ---
 
 ## 12. C8 实施记录：硬件信息暴露（2026-10-19）
-
 ### 数据怎么会丢的
 
 ```
@@ -337,3 +335,47 @@ boards/<board>/board_devices.yaml ──bmgr──▶ gen_bmgr_codes/gen_board_m
 - `board_devices.yaml` 顶部那段注释已经与实际 config 不符（touch CS、SD 引脚、display RST），
   现在有了单一生成来源，建议把那段注释删掉或改成指向生成物，以免又变成第二个事实来源。
 - 未做（用户选择）：把原始 yaml 拷进 `/system/board/`、以及运行时枚举设备的 capability。
+
+---
+
+## 13. C9：网关抖动的传输层重试（2026-10-19）
+
+### 问题
+
+第二轮实测里同一个子 agent 连续两次死于 `ESP_ERR_HTTP_FETCH_HEADER`（网关抖动，与代码无关），
+旧策略只在 **turn 的第一次** LLM 调用重试一次，于是两次抖动就让一个跑了 80 轮的 agent 被替换。
+
+### 策略
+
+**可重试 = 传输层失败，与"第几轮"无关。** 失败的调用没有拿到任何响应，也就没有任何结果被应用；
+重发的是**同一份请求**（工具结果被重放，工具**不会**重跑），所以任意轮次重试都是安全的。
+
+- 错误分类（`claw_core_llm_failure_is_transient`）：`ESP_ERR_HTTP_CONNECT / FETCH_HEADER /
+  CONNECTION_CLOSED / READ_TIMEOUT / EAGAIN / CONNECTING / WRITE_DATA`、`ESP_ERR_TIMEOUT`；
+  另外 **HTTP 5xx 与 429** 也算（网关答了但服务不了）。**4xx 不重试**（请求本身有问题）。
+- 为此让传输层在非 200 时也回填 `status_code`，并由两个 chat 后端把它带进
+  `claw_llm_response_t.http_status`（0 = 根本没拿到响应），避免靠解析错误文本判断。
+- 次数与间隔：**1 次首发 + 4 次重试**，间隔 800 ms → 1.6 s → 3.2 s → 6.4 s（上限 8 s），
+  每次 ±25% 抖动——设备上可能有多个 agent 同时重试，固定间隔会一起砸同一个抖动中的网关。
+- 放弃时错误串追加 `(gave up after N attempts)`，让父 agent 和用户都能看出是网关问题。
+- 串行化 OOM、4xx、调用方 abort 一律不重试。
+
+### 设备验证
+
+把 `llm_base_url` 临时指向 `http://127.0.0.1:1/v1`（必然拒连）后发一条消息：
+
+```
+LLM call failed (HTTP request failed: ESP_ERR_HTTP_CONNECT, http=0); retry 1/4 in 792 ms
+... retry 2/4 in 1408 ms
+... retry 3/4 in 3200 ms
+... retry 4/4 in 4992 ms
+failed: HTTP request failed: ESP_ERR_HTTP_CONNECT (gave up after 5 attempts)
+```
+
+随后把 base_url 还原并确认正常路径：`status=done raw=pong`，**零重试**。
+（测试脚本 `retry_check.py` 带异常路径的还原保护，避免把设备留在死端点上。）
+
+### 遗留
+
+- 单轮最长增加约 10 s 退避；LLM 超时本身是 300 s，若网关是"连上了但一直不回"，一次失败要
+  等满超时再重试——那种场景需要的是**更短的连接/首包超时**，不是更多重试。可后续单独评估。

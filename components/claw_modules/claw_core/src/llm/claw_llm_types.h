@@ -81,6 +81,11 @@ typedef struct {
     char *raw_message_json;
     claw_llm_tool_call_t *tool_calls;
     size_t tool_call_count;
+    /* HTTP status of the call that produced or failed this response (added):
+     * 0 when no response arrived at all (connect/header failure). Lets the agent
+     * loop tell a retryable gateway 5xx/429 from a 4xx that will fail the same
+     * way, without parsing the error text. */
+    int http_status;
 } claw_llm_response_t;
 
 typedef struct {

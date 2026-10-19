@@ -11,10 +11,66 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "llm/claw_llm_http_transport.h"
 
 static const char *TAG = "claw_core";
+
+/* Retry policy for transient LLM transport failures (added).
+ *
+ * A gateway in front of the model flakes in ways that say nothing about the turn:
+ * dropped connections, missing response headers, 502/503/429. Nothing from the
+ * failed call was applied, so resending the identical request is safe even after
+ * earlier rounds ran tools - the tools are NOT re-executed, only the model call is
+ * repeated. Non-transport failures (serialization OOM, a 4xx, a caller abort) will
+ * fail identically and are reported immediately.
+ *
+ * The interval grows each time (800 ms, 1.6 s, 3.2 s, capped) with jitter, because
+ * a flapping gateway is usually busy and several agents on this device may be
+ * retrying at once: hammering it at a fixed interval makes the flap longer. */
+#define CLAW_CORE_LLM_RETRY_MAX_RETRIES 4   /* the first try plus four retries */
+#define CLAW_CORE_LLM_RETRY_BASE_MS      800
+#define CLAW_CORE_LLM_RETRY_MAX_MS       8000
+
+static bool claw_core_llm_failure_is_transient(esp_err_t err, int http_status)
+{
+    switch (err) {
+    case ESP_ERR_HTTP_CONNECT:
+    case ESP_ERR_HTTP_FETCH_HEADER:
+    case ESP_ERR_HTTP_CONNECTION_CLOSED:
+    case ESP_ERR_HTTP_READ_TIMEOUT:
+    case ESP_ERR_HTTP_EAGAIN:
+    case ESP_ERR_HTTP_CONNECTING:
+    case ESP_ERR_HTTP_WRITE_DATA:
+    case ESP_ERR_TIMEOUT:
+        return true;
+    default:
+        break;
+    }
+    /* A gateway answered but could not serve the request. A 4xx is our request's
+     * fault and will fail the same way, so it is not retried. */
+    return http_status >= 500 || http_status == 429;
+}
+
+static uint32_t claw_core_llm_retry_delay_ms(uint32_t attempt)
+{
+    uint32_t delay = CLAW_CORE_LLM_RETRY_BASE_MS;
+    uint32_t jitter;
+
+    for (uint32_t i = 0; i < attempt && delay < CLAW_CORE_LLM_RETRY_MAX_MS; i++) {
+        delay <<= 1;
+    }
+    if (delay > CLAW_CORE_LLM_RETRY_MAX_MS) {
+        delay = CLAW_CORE_LLM_RETRY_MAX_MS;
+    }
+    /* +/-25%: 0..half of the delay, minus a quarter. */
+    jitter = (delay * (esp_random() % 51)) / 100;
+    return delay - (delay / 4) + jitter;
+}
 
 static esp_err_t handle_pending_user_interrupts(claw_core_state_t *core,
                                                 const claw_core_request_item_t *request,
@@ -123,8 +179,9 @@ void claw_core_agent_loop_task(void *arg)
          * tool-call round limit, so a parent never sees a silently stuck child. */
         claw_core_completion_type_t completion_outcome = CLAW_CORE_COMPLETION_FAILED;
         bool completion_notified = false;
-        /* llm-retry (added): one retry of the first LLM call of a turn. */
-        bool llm_retry_used = false;
+        /* llm-retry (added): transient transport failures are retried with
+         * exponential backoff; this counts the retries used for this request. */
+        uint32_t llm_retry_count = 0;
         /* in-turn window report (added): what the previous round's trim did, so
          * the model is told about lost context instead of silently forgetting. */
         char trim_note[CLAW_CORE_TRIM_NOTE_MAX] = {0};
@@ -388,18 +445,43 @@ void claw_core_agent_loop_task(void *arg)
                         continue;
                     }
                 }
-                /* llm-retry (added): a transient upstream/transport failure on the
-                 * first LLM call (no tool has run yet) should not kill the turn;
-                 * retry once. Later rounds are not retried because tools may have
-                 * already produced side effects. */
-                if (!llm_retry_used && iteration == 0 && !core->stop_requested) {
-                    llm_retry_used = true;
-                    ESP_LOGW(TAG, "request=%" PRIu32 " retrying first LLM call after failure: %s",
+                /* llm-retry (added; broadened): retry transient transport failures
+                 * at ANY iteration and with a growing interval. The failed call
+                 * produced no response, so nothing was applied and the identical
+                 * request can be sent again - earlier rounds' tool results are
+                 * replayed, not re-executed. See the policy comment at the top. */
+                if (!core->stop_requested &&
+                        llm_retry_count < CLAW_CORE_LLM_RETRY_MAX_RETRIES &&
+                        claw_core_llm_failure_is_transient(err, llm_response.http_status)) {
+                    uint32_t delay_ms = claw_core_llm_retry_delay_ms(llm_retry_count);
+
+                    llm_retry_count++;
+                    ESP_LOGW(TAG,
+                             "request=%" PRIu32 " LLM call failed (%s, http=%d); retry %u/%u in %" PRIu32 " ms",
                              request.view.request_id,
-                             response.view.error_message ? response.view.error_message : esp_err_to_name(err));
+                             response.view.error_message ? response.view.error_message : esp_err_to_name(err),
+                             llm_response.http_status,
+                             (unsigned)llm_retry_count,
+                             (unsigned)CLAW_CORE_LLM_RETRY_MAX_RETRIES,
+                             delay_ms);
                     free(response.view.error_message);
                     response.view.error_message = NULL;
+                    llm_response.http_status = 0;
+                    vTaskDelay(pdMS_TO_TICKS(delay_ms));
                     continue;
+                }
+                /* Say how many attempts were spent, so a flapping gateway is
+                 * visible in the failure the parent/user sees. */
+                if (llm_retry_count > 0 && response.view.error_message) {
+                    char *with_attempts = claw_utils_string_dup_printf(
+                        "%s (gave up after %u attempts)",
+                        response.view.error_message,
+                        (unsigned)(llm_retry_count + 1));
+
+                    if (with_attempts) {
+                        free(response.view.error_message);
+                        response.view.error_message = with_attempts;
+                    }
                 }
                 goto finish_request;
             }

@@ -5,12 +5,14 @@
  */
 #include "llm/backends/claw_llm_backend_anthropic.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "llm/claw_llm_http_transport.h"
 #include "llm/media/claw_media_pipeline.h"
 
@@ -157,6 +159,30 @@ static cJSON *anthropic_make_tool_use_block(cJSON *tool_call)
     }
     cJSON_AddItemToObject(block, "input", input_json);
     return block;
+}
+
+/* Sum the payload bytes of a JSON tree (added). Used only to size the print
+ * buffer so cJSON does not have to grow it: each growth is a realloc that can
+ * transiently need old+new contiguous bytes. */
+static size_t json_tree_bytes(const cJSON *item)
+{
+    size_t total = 0;
+
+    for (; item != NULL; item = item->next) {
+        if (item->string) {
+            total += strlen(item->string) + 4;
+        }
+        if (cJSON_IsString(item) || cJSON_IsRaw(item)) {
+            if (item->valuestring) {
+                total += strlen(item->valuestring) + 4;
+            }
+        } else if (cJSON_IsObject(item) || cJSON_IsArray(item)) {
+            total += json_tree_bytes(item->child) + 4;
+        } else if (item->type != cJSON_NULL) {
+            total += 24;
+        }
+    }
+    return total;
 }
 
 static cJSON *anthropic_duplicate_supported_block(cJSON *block)
@@ -713,10 +739,20 @@ static esp_err_t build_chat_body(const anthropic_backend_ctx_t *ctx,
         cJSON_Delete(tools);
     }
 
-    post_data = cJSON_PrintUnformatted(body);
+    size_t body_est = json_tree_bytes(body) + 64;
+    if (body_est > (size_t)INT_MAX) {
+        body_est = (size_t)INT_MAX;
+    }
+    post_data = cJSON_PrintBuffered(body, (int)body_est, false);
     cJSON_Delete(body);
     if (!post_data) {
-        *out_error_message = dup_printf("Out of memory serializing request");
+        *out_error_message = dup_printf(
+            "Out of memory serializing request (~%u B; free_int=%u largest_int=%u free_psram=%u largest_psram=%u)",
+            (unsigned)body_est,
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         return ESP_ERR_NO_MEM;
     }
 

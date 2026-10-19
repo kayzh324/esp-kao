@@ -91,7 +91,9 @@ static const claw_agent_mgr_subagent_type_prompt_t s_default_subagent_type_promp
         .agent_type = "build",
         .system_prompt = "Agent type: build. Implement the change: locate with grep_files, read the exact "
                          "window, change with edit_file (small diffs), then verify on the device. Return "
-                         "what changed, which files, and the verification result.",
+                         "what changed, which files, and the verification result. Keep files modular: split "
+                         "by responsibility into apps/_lib/ helpers before a file grows - a file past about "
+                         "a third of your round budget is too big (the write tools report the size).",
     },
     {
         .agent_type = "verify",

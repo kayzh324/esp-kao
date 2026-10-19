@@ -5,12 +5,14 @@
  */
 #include "llm/backends/claw_llm_backend_openai_compatible.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "llm/claw_llm_http_transport.h"
 #include "llm/media/claw_media_pipeline.h"
 
@@ -206,6 +208,31 @@ static esp_err_t parse_chat_response(const char *body,
     return ESP_OK;
 }
 
+/* Sum the payload bytes of a JSON tree (added). Used only to size the print
+ * buffer so cJSON does not have to grow it: each growth is a realloc that can
+ * transiently need old+new contiguous bytes, which is what pushed a long-running
+ * subagent over the edge during serialization. */
+static size_t json_tree_bytes(const cJSON *item)
+{
+    size_t total = 0;
+
+    for (; item != NULL; item = item->next) {
+        if (item->string) {
+            total += strlen(item->string) + 4;
+        }
+        if (cJSON_IsString(item) || cJSON_IsRaw(item)) {
+            if (item->valuestring) {
+                total += strlen(item->valuestring) + 4;
+            }
+        } else if (cJSON_IsObject(item) || cJSON_IsArray(item)) {
+            total += json_tree_bytes(item->child) + 4;
+        } else if (item->type != cJSON_NULL) {
+            total += 24;
+        }
+    }
+    return total;
+}
+
 /* message projection (added): the core annotates messages with fields that only
  * some backends understand - `is_error` is an Anthropic `tool_result` field. This
  * backend used to duplicate each message verbatim into the body, so that field
@@ -230,18 +257,20 @@ static cJSON *openai_compatible_project_message(const cJSON *message)
         return NULL;
     }
     for (size_t i = 0; i < sizeof(OPENAI_MESSAGE_FIELDS) / sizeof(OPENAI_MESSAGE_FIELDS[0]); i++) {
-        const cJSON *field = cJSON_GetObjectItemCaseSensitive(message, OPENAI_MESSAGE_FIELDS[i]);
-        cJSON *copy;
+        cJSON *field = cJSON_GetObjectItemCaseSensitive(message, OPENAI_MESSAGE_FIELDS[i]);
 
         if (!field) {
             continue;
         }
-        copy = cJSON_Duplicate(field, true);
-        if (!copy) {
+        /* Reference the source field instead of deep-copying it (added): the
+         * projected body only needs to live long enough to be serialized, and
+         * request->messages outlives it. Deep-copying every message doubled the
+         * whole context at the serialization peak - a long-running subagent ran
+         * out of memory exactly there. */
+        if (!cJSON_AddItemReferenceToObject(projected, OPENAI_MESSAGE_FIELDS[i], field)) {
             cJSON_Delete(projected);
             return NULL;
         }
-        cJSON_AddItemToObject(projected, OPENAI_MESSAGE_FIELDS[i], copy);
     }
     return projected;
 }
@@ -308,10 +337,20 @@ static esp_err_t build_chat_body(const openai_compatible_backend_ctx_t *ctx,
         cJSON_AddItemToObject(body, "tools", tools);
     }
 
-    post_data = cJSON_PrintUnformatted(body);
+    size_t body_est = json_tree_bytes(body) + 64;
+    if (body_est > (size_t)INT_MAX) {
+        body_est = (size_t)INT_MAX;
+    }
+    post_data = cJSON_PrintBuffered(body, (int)body_est, false);
     cJSON_Delete(body);
     if (!post_data) {
-        *out_error_message = dup_printf("Out of memory serializing request");
+        *out_error_message = dup_printf(
+            "Out of memory serializing request (~%u B; free_int=%u largest_int=%u free_psram=%u largest_psram=%u)",
+            (unsigned)body_est,
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         return ESP_ERR_NO_MEM;
     }
 

@@ -319,3 +319,134 @@ W request body trimmed to ~294252 bytes (folded=7 omitted=0 blanked=0)
 - 遗留可优化项：`CLAW_TIER_RUNTIME_ARG_MAX_BYTES`(200) 与 `CLAW_TIER_TOOL_RESULT_MAX_BYTES`(8 KB)
   仍为固定值（§9.4）；`CLAW_CTX_W_CEILING`(256 KB) 是否上调需按 PSRAM 最大连续块与基准任务定。
 
+---
+
+## 11. 追加（同日）：长程多子 agent 会话分析——OOM 仍会杀死子 agent
+
+里程碑：`230288ef`（est_budget 补回放历史项）。
+
+### 11.1 会话构成
+
+| 会话 | id | 大小 | 角色 |
+| --- | --- | --- | --- |
+| root | `…:cjsonTest` (`304ea942`) | 365 KB / 167 条 | 编排：`spawn_agent`×5、`send_agent_followup`×10、`pin_note`×7、`inspect_agent`×3 |
+| subagent_01 | `…:subagent_01` (`53e01e03`) | 2.04 MB / 603 条（已完整取得） | 主线 build：B1→B2→B3→B4 |
+| subagent_02 | `…:subagent_02` (`54e01f96`) | 264 KB / 70 条 | 恢复被 OOM 杀死后的 5A 树 |
+| subagent_03 | `…:subagent_03` (`55e02129`) | 44 KB / 15 条 | 紧预算恢复 + 落盘状态 |
+
+### 11.2 读写比例确实改善
+
+| 会话/阶段 | read-ish | write-ish | exec(lua) | read:write |
+| --- | --- | --- | --- | --- |
+| subagent_01 **全量**（603 条） | 160 | 48 | 90 | 3.3 |
+| subagent_01 阶段 A（修复前死循环） | 60 | 0 | 0 | 60:0 |
+| subagent_01 阶段 B（修复后） | 100 | 48 | 90 | **2.1** |
+| subagent_02 | 17 | 7 | 18 | 2.4 |
+| root | 29 | 8 | 23 | 3.6 |
+
+阶段 B：`main.lua` 读 40 次 / 写 48 次（≈0.8 读/写，编辑前取精确文本所必需），
+并有 90 次设备实测（`lua_run_script*` / `lua_get_async_job` / `lua_tail_async_job`）。
+**结论：修复后重读是手术式、必要的；不是窗口逐出造成（§10.2 `omitted=0`）。**
+
+且交付真实：B1 探针→B2 修 BUG-1（真机静止 60 s 航向仅散 0.3°）→B3 成本归因→B4 RGB565 缓冲（用户目测 A/B "一样"），
+`/tmp` 留下 B1–B4 报告 + 备份 + 交接文件。
+
+### 11.3 关键问题：`Out of memory serializing request` 仍会杀死子 agent
+
+root 会话记录（`<subagent_failed>`）：
+
+- 记录 111：`subagent_01 … error="Out of memory serializing request"`（它在收尾时挂掉）。
+- 记录 131：`subagent_02 … error="Out of memory serializing request"`（恢复任务也挂了）。
+
+root 恢复得体的（`inspect_agent`→写对比脚本→`close_agent`→`spawn_agent` 新恢复子 agent→写
+`SB_HANDOVER.md`），但**方案 §1 判据 2「零 OOM」仍未达成**。
+
+### 11.4 根因：序列化峰值 ≈ 3× 请求体
+
+`claw_llm_backend_openai_compatible.c`：
+1. `openai_compatible_project_message()` 对**每条消息**做 `cJSON_Duplicate(field, true)`（深拷贝）→
+   构造出与 `request->messages` 等大的 `body` 树；
+2. `cJSON_PrintUnformatted(body)` 再分配等大的输出串（且 cJSON 内部按倍增扩容）。
+
+于是峰值 ≈ 原树 M + 副本 M + 输出串 M ≈ **3M**。子 agent 长程运行后 M 很大（会话 2 MB），
+叠加显示/会话/PSRAM 碎片 → `malloc` 回落内部 RAM（仅 ~63 KB）失败 → 返回 NULL → OOM。
+
+### 11.5 建议修复（按性价比）
+
+1. **消除深拷贝**：投影改用 cJSON 引用（`cJSON_AddItemReferenceToObject`），峰值 3M→2M。
+2. **闸门落实内存预检**（A2 只记了日志没执行）：`est × CTX_PSRAM_FACTOR > 可用 PSRAM` 时
+   **提前 refuse 并给可执行建议**，把"崩溃"变成"可续跑的干净拒绝"（对齐 §1 判据 3）。
+3. **约束子 agent 上下文增长**：长程子 agent 会话 2 MB、请求体逼近上限；需对子 agent 也做
+   session projection / 上限。
+4. **诊断**：把 free/largest（PSRAM+internal）写进 OOM 错误串，便于下次定位。
+
+### 11.6 取数限制（已澄清）
+
+- 设备 HTTP 文件下载**在设备忙时会截断** chunked 流（SD 读失败，`http_server_files_api.c` 的流未终止）；
+  **设备空闲时可完整下载**（本次 2.04 MB 一次取全，603 条记录 0 损坏）。
+  ⇒ 取大会话前先停掉 agent/作业；失败就重试。
+- `curl` Range 不受支持；`storage.read_file()` 整读 2 MB 报 `failed to allocate read buffer`
+  （Lua 串放不下）——**不要对大文件整读**。若要自动化取大文件，建议给 HTTP 下载加 Range/分片。
+
+### 11.7 进一步方案（基于完整记录）
+
+**目标对齐 §1 判据 2「零 OOM」**：目前唯一未达标项。
+
+**根因（代码级）**：序列化峰值 ≈ **3–4× 请求体**
+- `openai_compatible_project_message()` 深拷贝每条消息 → `body` 树 ≈ M；
+- `cJSON_PrintUnformatted()` 输出串按倍增扩容 → 瞬态再 ≈ M；
+- 子 agent 长程运行 M 逼近闸门上限（W 256 KB + replay 48 KB + preamble 32 KB = 336 KB），
+  峰值 ~1 MB，PSRAM 碎片化时 `malloc` 回落内部 RAM（~63 KB）失败 → NULL → OOM。
+
+**改动（按性价比）**：
+
+| # | 改动 | 预期收益 | 风险 |
+| --- | --- | --- | --- |
+| 1a | 投影改 cJSON 引用（`cJSON_AddItemReferenceToObject`），去掉深拷贝 | 峰值 −M | 需确认 body 生命周期短于 messages（是） |
+| 1b | `cJSON_PrintBuffered(body, est, false)` 用预估值预分配 | 去掉倍增瞬态 −~M | 预估值偏小会回落倍增（无害） |
+| 2 | 闸门落实**内存预检**：`est × CTX_PSRAM_FACTOR > 可用(PSRAM+internal 连续块)` → 逐出→复检→仍不足则 **refuse（带建议）** | 把"崩溃"变成"可续跑的干净拒绝" | 阈值定标 |
+| 3 | OOM/拒绝错误串带 free/largest（PSRAM+internal） | 可定位 | 无 |
+| 4 | 子 agent 上下文增长约束（长程 2 MB 会话） | 降 M | 需设计 |
+
+**建议先做 1a+1b（直接降峰值）+ 3（诊断）**，复测同一 compass 任务看 OOM 是否消失；
+若仍现，再做 2 兜底。1a+1b 目标是峰值 **3M → 2M**（树 + 单份输出，已是该设计下限）。
+
+---
+
+## 12. 追加（同日）：降序列化峰值 + 提示词/skill 层约束
+
+### 12.1 代码（1a + 1b + 3，两个后端）
+
+| # | 改动 | 文件 |
+| --- | --- | --- |
+| 1a | 投影改 **cJSON 引用**（`cJSON_AddItemReferenceToObject`）去掉每条消息的深拷贝 → 峰值 −M | `claw_llm_backend_openai_compatible.c`（`openai_compatible_project_message`） |
+| 1b | `cJSON_PrintBuffered(body, json_tree_bytes(body)+64, false)` 预分配输出缓冲，去掉倍增瞬态 −~M | 同上 + `claw_llm_backend_anthropic.c` |
+| 3 | OOM 错误串带 `~body B / free_int / largest_int / free_psram / largest_psram` | 同上 |
+
+引用安全性：`request->messages` 生命周期长于临时 `body`；cJSON 删除引用项不会释放共享的
+`child`/`valuestring`。anthropic 的**块级深拷贝**（`anthropic_duplicate_supported_block`）本次未改，
+作为后续项（非当前后端）。
+
+### 12.2 提示词 / skill 层（对应用户追加的两点）
+
+| 层 | 位置 | 内容 |
+| --- | --- | --- |
+| 系统提示词 | `app_claw.c` `APP_ROOT_AGENT_SYSTEM_PROMPT` | 子 agent 失败（含 OOM）时：**检查盘上实际落地（可能只写了一半）**→`close_agent`→恢复或派**有界恢复子 agent**（任务先写文件）；反复失败=资源紧张信号，**缩小每个子 agent 的体量与所需上下文**；留**冷启动交接文件** |
+| 系统提示词 | `app_claw.c` `APP_SYSTEM_PROMPT_CONVENTIONS` | **模块化**：按职责拆到 `apps/_lib/` 并 `require`，文件超过约 1/3 轮预算即为过大；`main.lua` 越写越长是缺陷不是进度 |
+| agent 类型提示词 | `claw_agent_mgr.c` build | 同上模块化约束（写工具会报文件大小） |
+| 系统 skill | `skills/dev_workflow/SKILL.md` | §9 增「Modularize, do not append」；新增 §10「When a subagent dies (OOM / timeout / limit)」 |
+
+依据（用户追加的发现）：① root 在长程运行中自主摸索出了"资源紧张→子 agent 异常→恢复"的流程，
+应固化到提示词/skill，不必每次重新发现；② compass 一直是单一 `main.lua` 不断追加到 61 KB，
+说明模块化与单文件体积约束没有落到**提示词/skill 层**。
+
+### 12.3 验证
+
+- build 通过；flash 通过；设备启动正常。
+- skill 已生效：`grep_files /system/skills/dev_workflow "Modularize"` → `skill.md:128` 命中。
+
+### 12.4 遗留
+
+- 1a 未应用到 anthropic 的块级拷贝；2（闸门内存预检）与 4（子 agent 上下文增长约束）未做。
+- 待复测：同一 compass 任务是否还出现 `Out of memory serializing request`。
+

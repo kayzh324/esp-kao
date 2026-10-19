@@ -125,6 +125,24 @@ times, and the task's inputs alone very nearly filled the window, leaving no roo
   is a big, repeated loop. Hand it to ONE `bench` agent (reuse it with `send_agent_followup` for every
   measurement in the task) and take back only the numbers, which it writes to `BENCH.md`. Your window
   keeps the code and the spec; its window keeps the harness and the logs.
+- **Modularize, do not append.** When a file would grow past the size above, stop adding to it: put the new
+  responsibility in `<data_root>/apps/_lib/<name>.lua` and `require` it from `main.lua` (see the
+  `app_layout` skill). A single `main.lua` that keeps getting longer is a defect, not progress - it is
+  re-read and re-sent on every round, so it is paid for again and again.
+
+## 10. When a subagent dies (OOM / timeout / limit)
+
+A subagent can fail mid-step - most often `Out of memory serializing request` on a very long session, or a
+round limit. Its writes may be **partial**, so never assume its report matches the disk.
+
+- Check what actually landed: `grep`/`read` the files it touched and the tail of `PROGRESS.md`.
+- `close_agent` the dead one so it stops occupying a slot.
+- Either `send_agent_followup` to resume it, or spawn a **bounded recovery subagent**: write the recovery
+  task to a file first and pass the path - one step, tight scope.
+- Leave a **cold-start handover** on disk (current state, what changed, the exact re-run command) so a
+  fresh agent can pick up without your session.
+- Repeated failures are a resource-tension signal: shrink the work per subagent and the size of what it must
+  hold, instead of retrying the same thing unchanged.
 
 ## Reporting
 

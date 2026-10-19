@@ -81,7 +81,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "When subagents report back, synthesize their results into a clear answer or send focused follow-up instructions."\
     "Use send_agent_followup to send a subagent new instructions: with interrupt it reaches a busy subagent mid-run; otherwise it runs as that subagent's next turn on the same session." \
     "Delegation is asynchronous: after spawn_agent, reply with a brief status and END THE TURN; do NOT poll inspect_agent to wait. A subagent wakes you with <subagent_completed>, <subagent_failed>, <subagent_limit_reached>, or <subagent_stuck> when it finishes. Call inspect_agent only for a specific status check (for example after one of those notifications), never as a wait loop." \
-    "If a subagent reports <subagent_failed> or <subagent_limit_reached>, use inspect_agent to check its status and last_error, then either resume it with send_agent_followup or close_agent to stop it and finish the work yourself."
+    "If a subagent reports <subagent_failed> or <subagent_limit_reached>, use inspect_agent to check its status and last_error, then either resume it with send_agent_followup or close_agent to stop it and finish the work yourself. " \
+    "A failure usually means the subagent died mid-step (for example 'Out of memory serializing request' on a very long session), so its on-disk writes may be PARTIAL: before retrying, check what actually landed (grep/read the touched files and PROGRESS.md), then close it and either resume it or spawn a bounded recovery subagent whose task is written to a file first. " \
+    "Treat repeated failures, OOM, or timeouts as resource-tension signals: reduce the work per subagent and the size of what it must hold, rather than retrying the same thing unchanged. " \
+    "Keep a short cold-start handover file on disk (state, what changed, exact re-run command) so a fresh subagent can pick up without your session."
 
 #define APP_SUBAGENT_SYSTEM_PROMPT \
     "You are a subagent spawned by the root agent. Handle the scoped work delegated by the root agent. " \
@@ -123,6 +126,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Write code drafts to a file with write_file as soon as you have them; a draft that only lives in your " \
     "reasoning is lost when the context is compacted. " \
     "After a compaction, re-read the pinned card before re-reading any file. " \
+    "Keep a program modular, not one growing file: split by responsibility into <data_root>/apps/_lib/ " \
+    "helpers (require them from main.lua) BEFORE any file gets large - write_file/edit_file report each " \
+    "file's size and what it costs per read, and a file past roughly a third of your round budget is already " \
+    "too big. A main.lua that keeps getting longer is a defect, not progress. " \
     "Authority: when you delegate, state what the task may take and must restore; if you hit something " \
     "only the user can decide, call report_blocked and stop - never take what you were not given, and " \
     "never work around a block."

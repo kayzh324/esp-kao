@@ -85,16 +85,18 @@ size_t claw_core_serialize_block_have(void)
 
 size_t claw_core_serialize_block_need(size_t body_bytes)
 {
-    /* The writer must obtain ONE contiguous buffer for the printed body (the cJSON
-     * tree itself is many small allocations, which fragmentation tolerates). 1.5x
-     * is the margin the hardening plan specified and it matches the observed
-     * failure: a ~200 KB body died with a 63 KB largest block. Deliberately not
-     * the 2.2x derived for W - that figure describes W's own headroom, and using
-     * it here would refuse requests the device can actually serialize. */
-    if (body_bytes > (SIZE_MAX / 2)) {
+    /* The writer must obtain ONE contiguous buffer for the printed body, while the
+     * cJSON tree still holds the same strings - so the peak is ~2x the body, not 1x.
+     *
+     * Measured on device (2026-10-19, session firmware1019-1): a ~238 KB body failed
+     * with a 467 KB largest PSRAM block, i.e. the real requirement was between 1.96x
+     * and 2x. The 1.5x gate this function used at first let exactly that body
+     * through, so the crash it was meant to prevent still happened. 2.2x adds
+     * fragmentation margin and matches the factor W itself is derived with. */
+    if (body_bytes > (SIZE_MAX / 3)) {
         return SIZE_MAX;
     }
-    return body_bytes + body_bytes / 2;
+    return body_bytes + (body_bytes * 6) / 5;  /* 2.2x */
 }
 
 void claw_core_window_update(void)

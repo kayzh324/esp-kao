@@ -28,7 +28,6 @@ from collections import Counter, defaultdict
 
 READ_LIKE = {"read_file", "grep_files", "list_dir", "activate_skill"}
 WRITE_LIKE = {"write_file", "edit_file", "restore_file"}
-POLL_LIKE = {"lua_list_async_jobs", "lua_get_async_job", "lua_tail_async_job", "sleep"}
 # S3 档 preamble：系统提示词 + 工具 schema（见 .agents/plans/capacity-and-trust-hardening.md 附录 D）
 PREAMBLE_CHARS = 30000
 
@@ -173,21 +172,47 @@ def cmd_roles(paths):
     return 0
 
 
+def _is_poll_call(name, args_json):
+    """A call that burns a round just to look at a job.
+
+    A get/tail WITH wait_ms is NOT a poll: it blocks inside the tool until there is
+    something to see, which is the whole point of the wait semantics. Counting those
+    as polling inflates the metric badly (measured: 13 waits, 9 of them get_async_job
+    with wait_ms 12-30 s, all reported as "pure polling" by the old rule).
+    """
+    if name == "sleep" or name == "lua_list_async_jobs":
+        return True
+    if name in ("lua_get_async_job", "lua_tail_async_job"):
+        try:
+            args = json.loads(args_json or "{}")
+        except Exception:
+            return True
+        wait_ms = args.get("wait_ms")
+        return not (isinstance(wait_ms, (int, float)) and wait_ms > 0)
+    return False
+
+
 def cmd_poll(path, start=0):
     recs = load(path)
-    total = poll = 0
+    total = poll = waits = 0
     combos = Counter()
     for _, kind, r in walk(recs, start):
         if kind != "assistant":
             continue
-        names = [tc.get("function", {}).get("name", "?") for tc in (r.get("tool_calls") or [])]
-        if not names:
+        calls = [(tc.get("function", {}).get("name", "?"),
+                  tc.get("function", {}).get("arguments", ""))
+                 for tc in (r.get("tool_calls") or [])]
+        if not calls:
             continue
         total += 1
-        combos[tuple(sorted(set(names)))] += 1
-        if set(names) <= POLL_LIKE:
+        combos[tuple(sorted({name for name, _ in calls}))] += 1
+        if all(_is_poll_call(name, args) for name, args in calls):
             poll += 1
-    print(f"{os.path.basename(path)}: tool轮={total} 纯轮询轮={poll} ({poll*100//max(total,1)}%)")
+        elif any(name in ("lua_get_async_job", "lua_tail_async_job") and not
+                 _is_poll_call(name, args) for name, args in calls):
+            waits += 1
+    print(f"{os.path.basename(path)}: tool轮={total} 真轮询轮={poll} ({poll*100//max(total,1)}%) "
+          f"阻塞等待轮={waits}")
     for c, n in combos.most_common(6):
         print(f"  x{n:<3} {c}")
     return 0

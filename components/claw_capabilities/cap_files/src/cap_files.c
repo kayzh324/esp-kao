@@ -513,6 +513,89 @@ static void cap_files_emit_line(char *output,
 static esp_err_t cap_files_snapshot(const char *resolved_path,
                                     char *out_version_path, size_t out_size);
 
+/* A missing path is almost always a near-miss, not a missing file: a dropped
+ * directory segment, a typo, or a guessed location. Point at the nearest EXISTING
+ * ancestor and a few of its entries so the next call can be right instead of
+ * guessing again. Observed on device: a skill's doc was requested at
+ * <skill>/docs/x.md while it actually lived in <skill>/scripts/docs/x.md.
+ * Bounded to three levels upward and never outside the sandbox root. */
+static void cap_files_append_missing_path_hint(const char *path, char *out, size_t out_size)
+{
+    cap_files_resolved_root_t root_spec;
+    char dir_path[256];
+    size_t used;
+
+    if (!path || !out || out_size == 0) {
+        return;
+    }
+    used = strlen(out);
+    if (used + 32 >= out_size) {
+        return;
+    }
+    if (strlcpy(dir_path, path, sizeof(dir_path)) >= sizeof(dir_path)) {
+        return;
+    }
+    root_spec = cap_files_match_root(path);
+
+    for (int level = 0; level < 3; level++) {
+        char *slash = strrchr(dir_path, '/');
+        char listing[192] = {0};
+        size_t listed = 0;
+        int shown = 0;
+        DIR *dir;
+        struct dirent *entry;
+
+        if (!slash || slash == dir_path) {
+            return;
+        }
+        *slash = '\0';
+        if (root_spec.dir && strncmp(dir_path, root_spec.dir, strlen(root_spec.dir)) != 0) {
+            return;   /* walked out of the sandbox */
+        }
+
+        dir = opendir(dir_path);
+        if (!dir) {
+            continue;   /* this level is missing too; keep walking up */
+        }
+        while ((entry = readdir(dir)) != NULL && shown < 8) {
+            size_t name_len;
+            bool is_dir = false;
+            char child[320];
+            struct stat st = {0};
+
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+            name_len = strlen(entry->d_name);
+            if (listed + name_len + 4 >= sizeof(listing)) {
+                break;
+            }
+            if (snprintf(child, sizeof(child), "%s/%s", dir_path, entry->d_name) < (int)sizeof(child) &&
+                    stat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
+                is_dir = true;
+            }
+            if (shown) {
+                listing[listed++] = ',';
+                listing[listed++] = ' ';
+            }
+            memcpy(listing + listed, entry->d_name, name_len);
+            listed += name_len;
+            if (is_dir) {
+                listing[listed++] = '/';
+            }
+            listing[listed] = '\0';
+            shown++;
+        }
+        closedir(dir);
+
+        if (shown > 0) {
+            snprintf(out + used, out_size - used,
+                     " (nearest existing directory %s contains: %s)", dir_path, listing);
+        }
+        return;
+    }
+}
+
 /* Line-numbered, paged file reader (added): returns a window [offset, offset+limit)
  * of lines with "N: " prefixes, plus a continuation hint when the window ends
  * before EOF. Replaces the previous whole-file byte dump. */
@@ -566,6 +649,7 @@ static esp_err_t cap_files_read_file_execute(const char *input_json,
         ESP_LOGE(TAG, "stat %s: errno=%d", resolved_path, errno);
         cJSON_Delete(root);
         snprintf(output, output_size, "Error: file not found: %s", resolved_path);
+        cap_files_append_missing_path_hint(resolved_path, output, output_size);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -574,6 +658,7 @@ static esp_err_t cap_files_read_file_execute(const char *input_json,
         ESP_LOGE(TAG, "fopen %s: errno=%d", resolved_path, errno);
         cJSON_Delete(root);
         snprintf(output, output_size, "Error: file not found: %s", resolved_path);
+        cap_files_append_missing_path_hint(resolved_path, output, output_size);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -840,6 +925,7 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
         snprintf(output, output_size,
                  "Error: file not found: %s (edit_file only edits existing files; use write_file for new files)",
                  resolved_path);
+        cap_files_append_missing_path_hint(resolved_path, output, output_size);
         return ESP_ERR_NOT_FOUND;
     }
     if (st.st_size > CAP_FILES_EDIT_MAX_FILE_SIZE) {

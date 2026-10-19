@@ -379,3 +379,44 @@ failed: HTTP request failed: ESP_ERR_HTTP_CONNECT (gave up after 5 attempts)
 
 - 单轮最长增加约 10 s 退避；LLM 超时本身是 300 s，若网关是"连上了但一直不回"，一次失败要
   等满超时再重试——那种场景需要的是**更短的连接/首包超时**，不是更多重试。可后续单独评估。
+
+---
+
+## 14. 三个软性问题（2026-10-19）
+
+### 14.1 技能按需激活（替代"一次性多装"）
+
+原常驻约定里写着"When multiple skills are needed, call activate_skill multiple times in a single
+response to activate multiple skills in parallel"——**是我们教它预装的**。实测中一个子 agent 在读规格
+之前就装了 4 个技能，而技能正文每轮都要重发。
+
+改为：**先读需求（或它指向的规格文件），再只激活当前这一步需要的技能**（确实都需要时可以一次装多个）；
+并说明代价是每轮重发。
+
+### 14.2 分阶段可观察交付（防"闷头干超长轮"）
+
+用户要的"渐进式上屏开发"，落到更专业的说法是 **vertical slices + observable checkpoints**：
+
+- 常驻约定加一句：多步工作按**可观察阶段**交付，每个阶段能在设备上检查（屏幕上是什么、日志哪一行、
+  哪个数字）就**停下来报告**；若干轮工具调用后仍没有可观察产物，就停下报告已有什么、还差什么。
+- `dev_workflow` 的 §1 从 "One visible step per turn" 改写为 **"Deliver in observable stages"**：
+  垂直切片、给阶段命名并说清落地后看什么（"It works now" 不算检查点）、阶段边界是写状态的地方。
+
+（未做：按轮数自动熔断。它属于此前评估过的 Stage 3，误报风险高，且注入内容会破坏缓存前缀——
+先靠约定，真复发了再上机制。）
+
+### 14.3 路径近失明的自纠（技能文档路径歧义）
+
+实测：模型把 `/system/skills/builtin_lua_modules/scripts/docs/<doc>.md` 读成了
+`…/builtin_lua_modules/docs/<doc>.md`（漏了 `scripts/`）。`{CUR_SKILL_DIR}` 在激活时**已经展开**成
+绝对路径，所以这是纯近失明，不是文档缺失。
+
+机制修复：`read_file` / `edit_file` 在路径不存在时，追加**最近一个存在的祖先目录及其内容**
+（最多上溯 3 层、不越出沙箱根、最多 8 项、目录带 `/`）。这样一次失败就能自纠，而不是再猜一轮：
+
+```
+Error: file not found: /system/skills/builtin_lua_modules/docs/lua_module_lcd_touch.md
+  (nearest existing directory /system/skills/builtin_lua_modules contains: skill.md, scripts/)
+```
+
+已在设备上用**那次失败的原路径**验证。

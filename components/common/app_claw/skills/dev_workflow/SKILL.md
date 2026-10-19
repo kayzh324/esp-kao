@@ -15,11 +15,20 @@ Use this skill for any turn that **writes or changes code files**: a new app or 
 fix, a refactor, or resuming earlier work. Do not load it for chat, for explaining code without changing
 it, or for running an existing script once.
 
-## 1. One visible step per turn
+## 1. Deliver in observable stages
 
-- Aim each turn at **one change the user can see or run** - not "finish a whole layer".
-- When the change is in place, **stop and report** it. Do not chain many changes in one turn: long turns
-  burn the device's context and token budget, and the user cannot steer mid-way.
+Work in **vertical slices**: each stage should be runnable and observable on the device, not one layer
+of an unfinished whole.
+
+- Aim each stage at **one change the user can see or run** - a screen that draws, a value that is
+  correct, a log line that proves a path was taken.
+- Name the stage and say what to look at when it lands (`S1 config page lays out`, `S2 countdown
+  ticks`). "It works now" is not a checkpoint.
+- When the stage is in place, **stop and report**. Do not chain stages in one turn: long turns burn the
+  device's context and token budget, and the user cannot steer mid-way.
+- If you notice you have run many tool rounds without producing anything observable, stop and report
+  what you have plus what is left. That is a checkpoint, not a failure.
+- A stage boundary is also where you write state down (`PROGRESS.md`, pinned card) - see §8.
 
 ## 2. Locate before you read
 

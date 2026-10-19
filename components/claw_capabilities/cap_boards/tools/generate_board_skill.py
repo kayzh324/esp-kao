@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generate current board skill markdown.')
     parser.add_argument('--metadata-yaml', required=True, help='Path to gen_board_metadata.yaml')
     parser.add_argument('--output-md', required=True, help='Generated markdown output path')
+    # Optional: the AUTHORED board files. bmgr's metadata export keeps device type and
+    # peripherals but drops `chip` and `config`, so chip models and I2C addresses never
+    # reached this skill and had to be maintained by hand in prose. These carry them;
+    # when absent the generator degrades to the inventory-only output it had before.
+    parser.add_argument('--board-devices-yaml', help='Path to the board board_devices.yaml')
+    parser.add_argument('--board-info-yaml', help='Path to the board board_info.yaml')
     return parser.parse_args()
 
 
@@ -60,6 +66,54 @@ def load_metadata(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError(f'Expected generated board metadata to be a YAML mapping: {path}')
     return data
+
+
+def load_authored_devices(path: Path | None) -> dict[str, dict[str, Any]]:
+    """name -> authored device definition (chip, config, ...)."""
+    if not path or not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except Exception:  # noqa: BLE001 - a missing/odd authored file must not fail the build
+        return {}
+    devices: dict[str, dict[str, Any]] = {}
+    for entry in (data or {}).get('devices', []) or []:
+        if isinstance(entry, dict) and isinstance(entry.get('name'), str):
+            devices[entry['name']] = entry
+    return devices
+
+
+def load_board_description(path: Path | None) -> str:
+    """The board's hand-written description.
+
+    board_info.yaml keeps it a single-quoted scalar with literal \\n sequences (the
+    board-manager generator writes it into a C string with no escaping), so turn
+    those back into real newlines before rendering markdown.
+    """
+    if not path or not path.exists():
+        return ''
+    try:
+        data = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except Exception:  # noqa: BLE001
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    description = data.get('description')
+    return description.replace('\\n', '\n') if isinstance(description, str) else ''
+
+
+def flatten_scalars(node: Any, prefix: str = '') -> list[tuple[str, Any]]:
+    """Flatten a nested mapping/list into dotted key paths with scalar values."""
+    entries: list[tuple[str, Any]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            entries.extend(flatten_scalars(value, f'{prefix}{key}.'))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            entries.extend(flatten_scalars(value, f'{prefix}{index}.'))
+    else:
+        entries.append((prefix.rstrip('.'), node))
+    return entries
 
 
 def normalize_label(path_parts: list[str]) -> str:
@@ -117,7 +171,9 @@ def format_io_list(entries: list[tuple[str, int]]) -> list[str]:
     return lines
 
 
-def load_devices(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+def load_devices(metadata: dict[str, Any],
+                 authored: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    authored = authored or {}
     raw_devices = metadata.get('devices', {})
     raw_peripherals = metadata.get('peripherals', {})
     if not isinstance(raw_devices, dict):
@@ -143,26 +199,69 @@ def load_devices(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
             })
 
+        entry = authored.get(name, {})
+        chip = entry.get('chip')
         devices.append({
             'name': name,
+            # chip models come only from the authored file: the metadata export drops them.
+            'chip': chip if isinstance(chip, str) and chip not in ('', 'none') else '',
+            # Bus addresses and any config-declared pin (touch CS, SD CS) come from the
+            # authored config; the metadata io map covers the shared bus pins.
+            'config_lines': format_config_lines(entry),
             'io_lines': io_lines,
             'peripherals': peripherals,
         })
     return devices
 
 
-def render_markdown(metadata: dict[str, Any], devices: list[dict[str, Any]]) -> str:
+# Curated rather than "every key in config": this skill is re-sent every round while
+# it stays active, so only facts needed to address the hardware belong in it (which
+# chip, which bus address, what geometry / timing).
+CONFIG_VALUE_KEYS = (
+    'i2c_addr',
+    'address',
+    'frequency',
+    'clock_speed_hz',
+    'sample_rate_hz',
+    'x_max',
+    'y_max',
+)
+# Keys whose integer value is a bus address. YAML parses `0x13` as 19, and code
+# writes these in hex, so render them back in hex or the reader has to convert.
+CONFIG_ADDRESS_KEYS = ('i2c_addr', 'address')
+
+
+def format_config_value(key: str, value: Any) -> str:
+    if key in CONFIG_ADDRESS_KEYS and type(value) is int:
+        return f'0x{value:02X}'
+    return str(value)
+
+
+def format_config_lines(authored: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for dotted, value in flatten_scalars(authored.get('config', {})):
+        key = dotted.split('.')[-1]
+        if key in CONFIG_VALUE_KEYS:
+            lines.append(f'- `{key}` -> `{format_config_value(key, value)}`')
+        elif key.endswith('_gpio_num') and type(value) is int and value >= 0:
+            lines.append(f'- `{key[:-len("_gpio_num")]}` -> `GPIO{value}`')
+    return list(dict.fromkeys(lines))
+
+
+def render_markdown(metadata: dict[str, Any],
+                    devices: list[dict[str, Any]],
+                    description: str = '') -> str:
     board_name = str(metadata.get('board', 'unknown'))
     chip = str(metadata.get('chip', 'unknown'))
     version = str(metadata.get('version', 'unknown'))
     manufacturer = str(metadata.get('manufacturer', 'unknown'))
-    description = str(metadata.get('description', ''))
+    if not description:
+        description = str(metadata.get('description', ''))
     lines = [
         '---',
         '{',
         '  "name": "board_hardware_info",',
-        '  "description": "Use this skill before operating hardware or writing Lua and board-specific code that depends on device inventory '
-        'and occupied GPIOs.",',
+        '  "description": "Use this skill before operating hardware or writing Lua and board-specific code: it lists this board\'s devices with their chip models, bus addresses, and occupied GPIOs.",',
         '  "metadata": {',
         '    "cap_groups": ["cap_boards"],',
         '    "manage_mode": "readonly"',
@@ -177,7 +276,7 @@ def render_markdown(metadata: dict[str, Any], devices: list[dict[str, Any]]) -> 
         '## Rules',
         '- Before operating any hardware, read this skill first.',
         '- Before assigning a GPIO, check whether it is already occupied below.',
-        '- When writing Lua or board-specific code, use the listed device names instead of guessing hardware wiring.',
+        '- When writing Lua or board-specific code, use the listed device names, chip models and bus addresses instead of guessing hardware wiring.',
         '',
         '## Board Summary',
         f'- Board: `{board_name}`',
@@ -187,7 +286,12 @@ def render_markdown(metadata: dict[str, Any], devices: list[dict[str, Any]]) -> 
     ]
 
     if description:
-        lines.append(f'- Description: {description}')
+        lines.extend([
+            '',
+            '## Board Notes',
+            '',
+            description,
+        ])
 
     lines.extend([
         '',
@@ -198,6 +302,11 @@ def render_markdown(metadata: dict[str, Any], devices: list[dict[str, Any]]) -> 
 
     for device in devices:
         lines.extend(['', f"### {device['name']}"])
+        if device.get('chip'):
+            lines.append(f"- Chip: `{device['chip']}`")
+        for config_line in device.get('config_lines', []):
+            lines.append(config_line)
+
         io_lines = list(device['io_lines'])
         for peripheral in device['peripherals']:
             io_lines.extend(peripheral['io_lines'])
@@ -213,6 +322,8 @@ def render_markdown(metadata: dict[str, Any], devices: list[dict[str, Any]]) -> 
         '',
         '## Notes',
         '- If a device has no explicit IO mapping here, treat it as unknown instead of guessing.',
+        '- Chip models, bus addresses and pins above are generated from the board definition; if '
+        'something you need is missing, say so rather than inventing it.',
         '',
     ])
     return '\n'.join(lines)
@@ -222,17 +333,23 @@ def main() -> int:
     args = parse_args()
     metadata_yaml = Path(args.metadata_yaml).resolve()
     output_md = Path(args.output_md).resolve()
+    devices_yaml = Path(args.board_devices_yaml).resolve() if args.board_devices_yaml else None
+    info_yaml = Path(args.board_info_yaml).resolve() if args.board_info_yaml else None
 
     print(f'[cap_boards] Loading generated board metadata from {metadata_yaml}')
     metadata = load_metadata(metadata_yaml)
-    devices = load_devices(metadata)
-    markdown = render_markdown(metadata, devices)
+    authored = load_authored_devices(devices_yaml)
+    description = load_board_description(info_yaml)
+    devices = load_devices(metadata, authored)
+    markdown = render_markdown(metadata, devices, description)
 
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_md.write_text(markdown, encoding='utf-8')
+    described = sum(1 for device in devices if device.get('chip'))
     print(
         f"[cap_boards] Generated skill for board {metadata.get('board', 'unknown')} "
-        f'with {len(devices)} devices: {output_md}'
+        f'with {len(devices)} devices ({described} with a chip model, '
+        f'{"board notes included" if description else "no board notes"}): {output_md}'
     )
     return 0
 

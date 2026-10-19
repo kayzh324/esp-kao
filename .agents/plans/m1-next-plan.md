@@ -74,7 +74,12 @@
 - **你的实测问题**：真实任务里是否还出现 `Out of memory serializing request`（终态判据 2）？
 - **风险/回退**：阈值定标；过严会把本可完成的任务拒掉。回退 = 只记日志不 refuse。
 
-### C4 — 可观测性 + 基准任务固化（让后续每个 cycle 可度量）✅ **可观测性已实施（见 §8）；基准任务固化待你指定任务**
+### C4 — 可观测性 + 基准任务固化（让后续每个 cycle 可度量）✅ **可观测性已实施（见 §8）**
+
+> **基准任务固化已放弃（用户决定，2026-10-19）**：历史 session 各自带着不同的问题，轮数暴涨不是
+> 同一条件下的可比量，拿它们当基准价值不大。**改以"用户主观感受 + 新 session 的过程分析"来量化**：
+> 每次实测用 `tools/session_eval.py` 出同一套结构指标（轮数 / 角色分布 / 纯轮询轮 / 分页 vs 重读 /
+> 输入量），与 M1 那份基线并列对比即可，不再冻结一个"标准任务"。
 
 - **依据**：`W` 在会话里完全不可见，本轮只能靠 200 KB 请求体反推；没有可复跑的基准任务，策略调整无法比较。
 - **改动**：`get_system_info` 增 context 段（`W` / `est_budget` / `refuse_limit` / 本轮是否触发逐出或拒绝 / PSRAM 与内部 largest）；构建日志带同样字段；把 compass 任务固化为可复跑基准（seed prompt + SPEC_V2 + 起始代码，见 §4）。
@@ -121,6 +126,16 @@
 - **风险**：回落阈值需要定标（内部 RAM 的连续块比 PSRAM 紧张得多）；写路径可能要为内部 flash 情况
   降低核心任务栈位置或改由一个内部栈的辅助任务落盘。
 - **优先级由你定**：你的板子（PSRAM + SD）不受影响，但这两条决定了"弱硬件兼容"能覆盖到哪些板型。
+
+### C8 — 硬件信息暴露（用户新增需求）✅ **已实施（见 §12）**
+
+- **需求**：agent 想拿硬件细节（芯片型号、I2C 地址）没有好途径；这些事实手写在 `board_info.yaml`
+  的 description 里，而那个文件不在"先读路径"上；`board_devices.yaml` 明明有却没有暴露。
+- **根因**：数据在生成链路里被丢两次——① bmgr 的 `gen_board_metadata.yaml` 只保留 type/peripherals，
+  丢掉 `chip` 与 `config`；② 生成脚本只渲染引脚。于是技能里只有"设备名 + GPIO"，型号与地址只存在于
+  手写 prose，且两处已经开始漂移（`board_devices.yaml` 顶部注释与实际 config 不一致）。
+- **方案（已实施）**：生成脚本直接读板级原始 yaml，把 `chip` / `i2c_addr` / 频率 / 配置里的引脚渲染进
+  `board_hardware_info` 技能；description 收敛为纯 prose；常驻约定加一句"操作硬件前先激活该技能"。
 
 ---
 
@@ -278,3 +293,42 @@ flash timing tuning 并 RTCWDT 重启）、**开启 PSRAM**（否则 spawn 准�
 | C5 | 是否还出现同轮重复委派 | spawn 结果里出现 `other_agents_of_this_type` 后，是否改用 followup；recon/verify 重复读是否下降 |
 
 **本轮未测**：C1/C2/C3/C5 的端到端效果、C4 的基准任务固化。板子上是本批次最终固件（含 C1–C5 + C6 的 skill 改动）。
+
+---
+
+## 12. C8 实施记录：硬件信息暴露（2026-10-19）
+
+### 数据怎么会丢的
+
+```
+boards/<board>/board_devices.yaml ──bmgr──▶ gen_bmgr_codes/gen_board_metadata.yaml ──脚本──▶ /system/skills/board_hardware_info/SKILL.md
+   (chip: bmm150, i2c_addr: 0x13)                (只剩 type + peripherals)                    (只剩 设备名 + 占用 GPIO)
+```
+
+两处丢失：**① bmgr 的 metadata 导出**（丢 `chip`/`config`，所以脚本想渲染也拿不到）；**② 生成脚本**
+只渲染 IO/引脚，连模板里已有的 `description`/`manufacturer` 槽位都没用上（生成物里写着
+`Manufacturer: unknown`）。结果型号与地址只存在于手写 description，而那不在"先读路径"上。
+
+### 改动
+
+| 改动 | 文件 |
+|---|---|
+| 生成脚本新增 `--board-devices-yaml` / `--board-info-yaml`，**直接读板级原始 yaml**（不依赖有损的 metadata 导出）：渲染 `chip`、`i2c_addr`（回写成 `0x..` 十六进制，因为 YAML 把 `0x13` 解析成 19）、频率/几何，以及配置里声明的引脚（补回了此前丢失的 touch CS=18、SD CS=4） | `cap_boards/tools/generate_board_skill.py` |
+| 渲染 `## Board Notes`（来自 board_info.yaml 的 description），并把技能 frontmatter 的 description 改成"含芯片型号/总线地址/占用 GPIO" | 同上 |
+| CMake：按 app 同样的方式从 `gen_bmgr_codes/CMakeLists.txt` 取板目录，把两个 yaml 作为参数与 DEPENDS 传入（缺文件时优雅退化为旧的纯清单输出） | `cap_boards/CMakeLists.txt` |
+| description 收敛为纯 prose（去掉 I2C 清单与引脚枚举——那些现在由生成物渲染），保留生成物推不出的东西：不要盲扫总线、背光 GPIO16、touch IRQ GPIO5、DATA 根随 SD 变化、USB 摄像头/音频 | `boards/kayzh/esp32_S3_test_board/board_info.yaml` |
+| 常驻约定加一句"操作硬件/分配 GPIO/写板级代码前先激活 board_hardware_info；型号、地址、引脚一律不许猜" | `app_claw.c` |
+
+### 效果与代价
+
+- 技能从 78 行 → **113 行 / 3.5 KB**，多出的全是型号/地址/此前缺失的引脚；在本板"文档类目标 ≈
+  一轮预算 1/8（≈6 KB）"以内。
+- 设备已验证：`cap call read_file {"path":"/system/skills/board_hardware_info/SKILL.md", ...}` 能读到
+  `Chip: \`bmm150\`` / `i2c_addr -> 0x13` / touch `cs -> GPIO18` / SD `cs -> GPIO4`。
+- 生成物是**构建产物**（不进 git）；改板级 yaml 会因其进入 DEPENDS 而自动重生成。
+
+### 遗留
+
+- `board_devices.yaml` 顶部那段注释已经与实际 config 不符（touch CS、SD 引脚、display RST），
+  现在有了单一生成来源，建议把那段注释删掉或改成指向生成物，以免又变成第二个事实来源。
+- 未做（用户选择）：把原始 yaml 拷进 `/system/board/`、以及运行时枚举设备的 capability。

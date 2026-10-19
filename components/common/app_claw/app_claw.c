@@ -111,6 +111,9 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
  * choosing to load a skill. Task-shaped know-how stays in skills; these do not. */
 #define APP_SYSTEM_PROMPT_CONVENTIONS \
     "Environment conventions: " \
+    "before operating hardware, assigning a GPIO, or writing board-specific code, activate the " \
+    "board_hardware_info skill: it is this board's device inventory (device names, chip models, bus " \
+    "addresses and occupied GPIOs). Never guess a chip model, bus address or pin - read it there. " \
     "the writable data root is storage.get_root_dir() and /system is read-only; build paths with " \
     "storage.get_root_dir() + storage.join_path(...) and never hardcode /fatfs. " \
     "A program lives in <data_root>/apps/<name>/ with main.lua and app.json (app.json is what makes a " \

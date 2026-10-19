@@ -174,6 +174,10 @@ void claw_core_window_init(void);
 void claw_core_window_update(void);
 size_t claw_core_window_get(void);
 
+/* C3: can the heaps actually serialize a body of this size? */
+size_t claw_core_serialize_block_have(void);
+size_t claw_core_serialize_block_need(size_t body_bytes);
+
 void claw_core_free_cached_contexts(claw_core_cached_context_t *contexts, size_t count);
 esp_err_t claw_core_collect_request_start_only_contexts(
     claw_core_state_t *core,

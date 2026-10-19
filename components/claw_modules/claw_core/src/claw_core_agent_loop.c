@@ -318,11 +318,13 @@ void claw_core_agent_loop_task(void *arg)
              * request" halfway through building the JSON. */
             ESP_LOGI(TAG,
                      "request=%" PRIu32 " iteration=%u built context: system=%u tools=%u messages=%u "
-                     "free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u",
+                     "W=%u block=%u free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u",
                      request.view.request_id, (unsigned)iteration,
                      (unsigned)(system_prompt ? strlen(system_prompt) : 0),
                      (unsigned)(tools_json ? strlen(tools_json) : 0),
                      (unsigned)cJSON_GetArraySize(messages),
+                     (unsigned)claw_core_window_get(),
+                     (unsigned)claw_core_serialize_block_have(),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),

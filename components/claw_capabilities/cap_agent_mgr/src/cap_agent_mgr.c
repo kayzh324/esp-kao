@@ -120,7 +120,76 @@ static esp_err_t cap_agent_mgr_spawn_execute(const char *input_json,
         return err;
     }
 
-    snprintf(output, output_size, "{\"agent_id\":\"%s\",\"status\":\"running\"}", agent_id);
+    {
+        /* reuse-over-respawn hint (added, C5). On a real task the root spawned two
+         * bench agents in the same turn with near-identical briefs, and five
+         * read-only agents each re-derived the same 62 KB file from zero (~8% of
+         * the task's input). The root prompt already says to reuse one bench agent
+         * per task, so more prompt text is not the fix: the hint belongs in the
+         * spawn result, where the decision is made. Informational only - it must
+         * never block a spawn, because a second agent is sometimes right. */
+        cJSON *out = cJSON_CreateObject();
+        claw_agent_mgr_agent_info_t *peers = NULL;
+        cJSON *others = NULL;
+        size_t peer_count = 0;
+        char *json;
+
+        if (!out) {
+            snprintf(output, output_size, "Error: out of memory.");
+            return ESP_ERR_NO_MEM;
+        }
+        cJSON_AddStringToObject(out, "agent_id", agent_id);
+        cJSON_AddStringToObject(out, "status", "running");
+
+        if (agent_type && agent_type[0]) {
+            peers = calloc(CAP_AGENT_MGR_LIST_MAX, sizeof(*peers));
+            if (peers &&
+                    claw_agent_mgr_list_agents(ctx, peers, CAP_AGENT_MGR_LIST_MAX, &peer_count) == ESP_OK) {
+                for (size_t i = 0; i < peer_count; i++) {
+                    if (strcmp(peers[i].agent_id, agent_id) == 0 ||
+                            strcmp(peers[i].agent_type, agent_type) != 0 ||
+                            peers[i].status == CLAW_AGENT_MGR_STATUS_EMPTY ||
+                            peers[i].status == CLAW_AGENT_MGR_STATUS_CLOSED) {
+                        continue;
+                    }
+                    if (!others) {
+                        others = cJSON_AddArrayToObject(out, "other_agents_of_this_type");
+                    }
+                    if (others) {
+                        cJSON *peer = cJSON_CreateObject();
+
+                        if (peer) {
+                            cJSON_AddStringToObject(peer, "agent_id", peers[i].agent_id);
+                            cJSON_AddStringToObject(peer, "status",
+                                                    claw_agent_mgr_status_to_string(peers[i].status));
+                            cJSON_AddItemToArray(others, peer);
+                        }
+                    }
+                }
+            }
+            free(peers);
+        }
+        if (others) {
+            cJSON_AddStringToObject(out, "hint",
+                                    "An agent of this type is already active. Reuse it with "
+                                    "send_agent_followup - it already holds the context it built, "
+                                    "whereas a new agent re-reads everything from zero. Spawn a "
+                                    "second one only for genuinely independent work.");
+        }
+
+        json = cJSON_PrintUnformatted(out);
+        cJSON_Delete(out);
+        if (!json) {
+            snprintf(output, output_size, "Error: out of memory.");
+            return ESP_ERR_NO_MEM;
+        }
+        if (strlcpy(output, json, output_size) >= output_size) {
+            free(json);
+            snprintf(output, output_size, "Error: spawn result is too large.");
+            return ESP_ERR_INVALID_SIZE;
+        }
+        free(json);
+    }
     return ESP_OK;
 }
 

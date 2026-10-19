@@ -289,6 +289,40 @@ static cJSON *cap_system_build_memory_json(void)
     return root;
 }
 
+/* Capacity / serialization state of the agent core (added, C4). These are the
+ * numbers that decide whether a round can be sent at all: the dynamic window W,
+ * the request byte budget, and the contiguous block the device can actually hand
+ * the serializer. Previously they existed only as log warnings, so judging a
+ * device run meant inferring them from failure strings. */
+static cJSON *cap_system_build_context_json(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    claw_core_context_stats_t stats = {0};
+
+    if (!root) {
+        ESP_LOGE(TAG, "context json: create failed");
+        return NULL;
+    }
+    if (claw_core_get_context_stats(&stats) != ESP_OK) {
+        cJSON_AddStringToObject(root, "error", "context stats unavailable");
+        return root;
+    }
+
+    cJSON_AddNumberToObject(root, "window_bytes", (double)stats.window_bytes);
+    cJSON_AddNumberToObject(root, "est_budget_bytes", (double)stats.est_budget_bytes);
+    cJSON_AddNumberToObject(root, "refuse_limit_bytes", (double)stats.refuse_limit_bytes);
+    cJSON_AddNumberToObject(root, "block_have_bytes", (double)stats.block_have_bytes);
+    cJSON_AddNumberToObject(root, "last_body_bytes", (double)stats.last_body_bytes);
+    cJSON_AddNumberToObject(root, "last_block_need_bytes", (double)stats.last_block_need_bytes);
+    cJSON_AddNumberToObject(root, "last_block_have_bytes", (double)stats.last_block_have_bytes);
+    cJSON_AddNumberToObject(root, "trim_count", (double)stats.trim_count);
+    cJSON_AddNumberToObject(root, "refuse_count", (double)stats.refuse_count);
+    cJSON_AddNumberToObject(root, "last_folded", (double)stats.last_folded);
+    cJSON_AddNumberToObject(root, "last_omitted", (double)stats.last_omitted);
+    cJSON_AddNumberToObject(root, "last_blanked", (double)stats.last_blanked);
+    return root;
+}
+
 static esp_err_t cap_system_get_sta_ip_info(esp_netif_ip_info_t *ip_info)
 {
     esp_netif_t *netif = NULL;
@@ -485,6 +519,7 @@ static cJSON *cap_system_build_info_json(void)
     cJSON_AddNumberToObject(root, "uptime_ms", (double)(esp_timer_get_time() / 1000));
     cJSON_AddItemToObject(root, "version", cap_system_build_version_json());
     cJSON_AddItemToObject(root, "memory", cap_system_build_memory_json());
+    cJSON_AddItemToObject(root, "context", cap_system_build_context_json());
     cJSON_AddItemToObject(root, "cpu", cap_system_build_cpu_json());
     cJSON_AddItemToObject(root, "wifi", cap_system_build_wifi_json());
     cJSON_AddItemToObject(root, "ip", cap_system_build_ip_json());
@@ -590,6 +625,9 @@ static esp_err_t cap_system_build_selected_info_json(const cJSON *sections, char
     }
     if (cap_system_section_is_requested(sections, "memory")) {
         ESP_GOTO_ON_ERROR(cap_system_add_json_section(root, "memory", cap_system_build_memory_json), cleanup, TAG, "Failed to add memory section");
+    }
+    if (cap_system_section_is_requested(sections, "context")) {
+        ESP_GOTO_ON_ERROR(cap_system_add_json_section(root, "context", cap_system_build_context_json), cleanup, TAG, "Failed to add context section");
     }
     if (cap_system_section_is_requested(sections, "cpu")) {
         ESP_GOTO_ON_ERROR(cap_system_add_json_section(root, "cpu", cap_system_build_cpu_json), cleanup, TAG, "Failed to add cpu section");
@@ -1019,7 +1057,7 @@ static const claw_cap_descriptor_t s_system_descriptors[] = {
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json = "{\"type\":\"object\",\"properties\":{\"sections\":{\"type\":\"array\",\"items\":{\"type\":\"string\","
-                             "\"enum\":[\"chip\",\"uptime\",\"version\",\"memory\",\"cpu\",\"wifi\",\"ip\"]},\"minItems\":1,\"uniqueItems\":true,"
+                             "\"enum\":[\"chip\",\"uptime\",\"version\",\"memory\",\"context\",\"cpu\",\"wifi\",\"ip\"]},\"minItems\":1,\"uniqueItems\":true,"
                              "\"description\":\"Optional list of system sections to return. Omit for full summary.\"}}}",
         .execute = cap_system_execute_get_info,
     },

@@ -238,6 +238,41 @@ esp_err_t claw_core_receive_for(claw_core_handle_t core,
                                 uint32_t timeout_ms);
 void claw_core_response_free(claw_core_response_t *response);
 
+/**
+ * @brief  Capacity / serialization statistics of the running core
+ *
+ *         (added, C4) The capacity decisions - window size, request budget, and
+ *         whether the device can actually serialize the request - used to be
+ *         visible only as warnings in the log, so judging a device run meant
+ *         inferring them from failure strings. These counters make the same
+ *         judgement a single call.
+ */
+typedef struct {
+    size_t window_bytes;          /**< Dynamic window W in force */
+    size_t est_budget_bytes;      /**< Byte budget for the whole request body */
+    size_t refuse_limit_bytes;    /**< Where the guard refuses instead of trimming */
+    size_t block_have_bytes;      /**< Largest contiguous block available right now */
+    size_t last_body_bytes;       /**< Last request body the guard estimated */
+    size_t last_block_need_bytes; /**< Contiguous block that body needs */
+    size_t last_block_have_bytes; /**< Contiguous block available at that moment */
+    uint32_t trim_count;          /**< Guards that had to degrade, this boot */
+    uint32_t refuse_count;        /**< Guards that refused a round, this boot */
+    uint32_t last_folded;         /**< Last trim: reasoning blocks folded */
+    uint32_t last_omitted;        /**< Last trim: tool results omitted */
+    uint32_t last_blanked;        /**< Last trim: tool arguments blanked */
+} claw_core_context_stats_t;
+
+/**
+ * @brief  Read the capacity / serialization statistics
+ *
+ * @param[out]  out  Receives the statistics
+ *
+ * @return
+ *         - ESP_OK on success
+ *         - ESP_ERR_INVALID_ARG if out is NULL
+ */
+esp_err_t claw_core_get_context_stats(claw_core_context_stats_t *out);
+
 #ifdef __cplusplus
 }
 #endif

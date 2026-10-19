@@ -50,7 +50,7 @@
 
 ## 3. Cycle 清单
 
-### C1 — 回报不截断 + 诊断不截断（最小改动，先解除诊断盲区）✅ **已实施，待你的实测验收（见 §6）**
+### C1 — 回报不截断 + 诊断不截断（最小改动，先解除诊断盲区）✅ **已实施（`a281ea40`）**
 
 - **依据**：OOM 诊断串被 768 B 通知上限截掉最有用的 `largest_psram`，导致无法区分"PSRAM 碎片"还是"内部 RAM 不足"；方案 B1 未做。
 - **改动**：子 agent 终局文本全文落盘 `<DATA>/.reports/<session>_<req>.md`（复用 `.toolout` 的 sanitize/prune 思路）；通知 = head(≤512 B) + `[full report: <path>]`；`inspect_agent` 增加 `report_path` 字段；**OOM/拒绝的错误串走同一套，保证字段不被截**。
@@ -58,7 +58,7 @@
 - **你的实测问题**：真实任务里子 agent 的长回报是否完整到达 root（不再出现"报告被截断"）？
 - **风险/回退**：`.reports` 占空间 → 复用 10 min prune；回退 = 恢复直发通知。
 
-### C2 — 轮数：长跑作业的等待语义（最大杠杆）✅ **已实施，待你的实测验收（见 §7）**
+### C2 — 轮数：长跑作业的等待语义（最大杠杆）✅ **已实施（`7b729a13`）**
 
 - **依据**：`sa12` 的 44/88 轮纯轮询 = 全任务 **24%** 输入；同批 `sa07`/`sa04` 用阻塞式 `lua_tail_async_job` 只查 3 次——**工具存在但默认做法不对**。
 - **改动**：(a) 让"等一个作业"只有一种自然做法：`lua_get_async_job` 支持阻塞等待（等到完成或超时），或规定测量类 agent 只能用 tail/wait；(b) 根提示词 + bench/recon 类型提示词 + `dev_workflow` 明确禁止轮询 `list/get` 循环。
@@ -66,7 +66,7 @@
 - **你的实测问题**：一次含设备实测的真实任务里，测量阶段的轮数是否明显下降，且没有出现"等太久/漏结果"？
 - **风险/回退**：阻塞会占住 agent core → 需长轮询 + 让出，而不是死等；回退 = 保留轮询但加提示词。
 
-### C3 — 基座：序列化"连续块预检"（把 OOM 变成可续跑的干净拒绝）
+### C3 — 基座：序列化"连续块预检"（把 OOM 变成可续跑的干净拒绝）✅ **已实施（见 §8）**
 
 - **依据**：200 KB 请求体通过了 336 KB 的闸门，却仍在序列化时 OOM；方案 A2 只落了日志没落 refuse。
 - **改动**：序列化前 `largest_free_block(target heap) ≥ est × f` 预检 → 不足则先有序逐出（复用 `claw_core_evict_to_budget`）→ 复检 → 仍不足则 refuse，错误串带**可执行建议**（缩小任务 / 新开会话 / 关闭空闲 agent）。
@@ -74,7 +74,7 @@
 - **你的实测问题**：真实任务里是否还出现 `Out of memory serializing request`（终态判据 2）？
 - **风险/回退**：阈值定标；过严会把本可完成的任务拒掉。回退 = 只记日志不 refuse。
 
-### C4 — 可观测性 + 基准任务固化（让后续每个 cycle 可度量）
+### C4 — 可观测性 + 基准任务固化（让后续每个 cycle 可度量）✅ **可观测性已实施（见 §8）；基准任务固化待你指定任务**
 
 - **依据**：`W` 在会话里完全不可见，本轮只能靠 200 KB 请求体反推；没有可复跑的基准任务，策略调整无法比较。
 - **改动**：`get_system_info` 增 context 段（`W` / `est_budget` / `refuse_limit` / 本轮是否触发逐出或拒绝 / PSRAM 与内部 largest）；构建日志带同样字段；把 compass 任务固化为可复跑基准（seed prompt + SPEC_V2 + 起始代码，见 §4）。
@@ -82,7 +82,7 @@
 - **你的实测问题**：无需额外动作——跑基准任务时顺带产出可对比的一组数字。
 - **风险/回退**：无。**建议 C4 与 C2 合并交付**，否则 C2 的收益无法量化。
 
-### C5 — 分工效率（测量预算 + 隔离冗余）
+### C5 — 分工效率（测量预算 + 隔离冗余）✅ **已实施（见 §9）**
 
 - **依据**：同轮重复委派（rec197/rec201 两个 bench 同一目标）；5 个只读 agent 重复建图 ≈ 8% 输入；bench 占 53% 输入而 build 只 16%。
 - **改动**：(a) spawn 前检测"同 turn 内已有同类型且目标高度相似"→ 拒绝并提示复用（`send_agent_followup`）；(b) 只读 agent 产出"文件地图/结构摘要"落盘，后续只读 agent **先读地图再读源码**；(c) 测量类 agent 的提示词要求先声明预期轮数/预算。
@@ -217,3 +217,64 @@ flash timing tuning 并 RTCWDT 重启）、**开启 PSRAM**（否则 spawn 准�
   C1 的设备验证里我用 `?path=/sdcard/...` 走 HTTP，实际在 DATA 根下造了一个名为 `sdcard` 的目录——
   已删除，并在**真实路径**上重做了 `read_file` 回读验证（见 §6）。
   ⇒ 后续所有设备文件操作：HTTP 用 `/tmp/x`，能力调用用 `/sdcard/tmp/x`。
+
+---
+
+## 8. C3 + C4 实施记录（2026-10-19）
+
+### C3 — 序列化连续块预检
+
+- **交付**：`claw_core_context_window.c` 新增 `claw_core_serialize_block_have()`（两个堆的最大连续块取大者
+  —— malloc 优先 PSRAM 但会回落内部 RAM，只报首选堆会拒掉本来能发的请求）与
+  `claw_core_serialize_block_need()`（1.5 × body）；`claw_core_context_guard_request()` 重写为
+  **先判可行度、再判预算**，任一越界即降级，降级后仍越界则 refuse，错误串给出
+  body / 需要的块 / 实际有的块 / 预算，并列出可执行动作（pin_note、开新会话、拆子 agent、
+  close 空闲子 agent）。
+- **关键修正**：原实现里那段"连续块预检"是**死代码**——它把 `largest_int + largest_psram` 相加
+  （两个堆不可能同时用），且只在日志里出现；更要命的是它在 `bytes < est_budget` 时**根本不会执行**。
+  M1 的 OOM（200 KB 体、336 KB 预算、63 KB 最大块）正是从这个缝隙穿过去的。
+- **为什么用 1.5× 而不是 W 推导里的 2.2×**：2.2 是给 W 自己留的余量；序列化时必须一次性拿到的是
+  **输出串**那一个连续块（cJSON 树是小块分配、碎片容忍），用 2.2 会把设备其实能发的请求拒掉。
+  两个数都进日志，便于用现场数据回调。
+
+### C4 — 可观测性
+
+- **交付**：`claw_core_context_stats_t` + `claw_core_get_context_stats()`；`get_system_info` 新增
+  `context` 段（也进默认全量输出）；每轮 `built context:` 日志增加 `W=` 与 `block=`。
+- **设备实测**：`cap call get_system_info {"sections":["context"]}` →
+  `window_bytes=262144`（W 取到上限）、`est_budget_bytes=344064`、`block_have_bytes=1638400`、计数器为 0。
+- **未做**：基准任务固化成可复跑 seed —— 需要你指定用哪个任务/规格作为冻结基准。
+
+## 9. C5 实施记录
+
+- **交付**：spawn 成功后的返回体改为 cJSON，并附 `other_agents_of_this_type`（同类型且活跃的其它
+  agent）与 `hint`（提示用 `send_agent_followup` 复用：新 agent 要从零重读，复用的那个已经持有上下文）。
+  **仅提示，不阻断**——第二个 agent 有时确实是对的。
+- **依据**：同一轮内两次近乎重复的 bench 委派；5 个只读 agent 各自从零重读同一个 62 KB 文件（≈8% 输入）。
+  root 提示词里已经有"复用同一个 bench agent"，再加文字无效——提示要出现在**做决定的那个工具结果**里。
+- **计划里的另两项未做**（附理由）："只读 agent 产出文件地图、后续先读地图"有"用摘要代替源码、
+  降低判断质量"的风险，而 (a) 一旦奏效就不再需要它；"测量类 agent 先声明预期轮数"只是提示词，无机制。
+- **验证状态：仅编译验证**。设备 CLI 的 `cap call` 被 `subagent management tools are root-agent only`
+  拒绝，无法在不驱动任务的前提下触发 —— 需要你的实测。
+
+## 10. C6（按需项）
+
+- **做了**：`skill_creator` 增加 `skill_slimming` 交叉引用，并写明"`SKILL.md` 控制在一轮预算的约 1/8"。
+- **未做（各有理由，优先级等你定）**：`.versions` 洞（脚本写文件不留快照 —— 要给 Lua 存储路径接上
+  版本机制，属结构性改动）；会话 reset 留痕 + 回注（M1 的 4 次重启是人为的，不是静默 reset，
+  本轮无现场证据）；P4 档校准（需 P4 硬件）；Stage 2 显示所有权（设计已定，改动大）；
+  Stage 3 无进展熔断（误报风险高，兜底用）。
+
+---
+
+## 11. 本批次验收清单（可以一次测完）
+
+| # | 看什么 | 判据 |
+|---|---|---|
+| C1 | 子 agent 长回报是否完整到达 root | 通知里出现 `[full report: /sdcard/.reports/...]`；root 能读回该文件；没有"报告被截断"的观感 |
+| C2 | 测量阶段轮数是否下降 | bench/子 agent 不再反复 `lua_list_async_jobs`/`lua_get_async_job`；无"等太久/漏结果"。可用 `session_eval.py poll <log>` 定量核对 |
+| C3 | 是否还出现 `Out of memory serializing request` | 终态判据 2；若仍出现，错误串现在会给出"需要的块 vs 实际有的块" |
+| C4 | 容量决策是否可见 | `cap call get_system_info {"sections":["context"]}` 的 `trim_count`/`refuse_count` 与观感一致；串口日志每轮有 `W=`/`block=` |
+| C5 | 是否还出现同轮重复委派 | spawn 结果里出现 `other_agents_of_this_type` 后，是否改用 followup；recon/verify 重复读是否下降 |
+
+**本轮未测**：C1/C2/C3/C5 的端到端效果、C4 的基准任务固化。板子上是本批次最终固件（含 C1–C5 + C6 的 skill 改动）。

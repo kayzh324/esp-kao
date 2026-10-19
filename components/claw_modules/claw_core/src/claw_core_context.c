@@ -950,6 +950,29 @@ void claw_core_trim_runtime_messages(cJSON *runtime_messages, char *note, size_t
 }
 
 
+/* Capacity observability (added, C4): what the guard decided, kept so a single
+ * call reports it instead of the operator inferring it from a failure string. */
+static claw_core_context_stats_t s_ctx_stats;
+
+esp_err_t claw_core_get_context_stats(claw_core_context_stats_t *out)
+{
+    size_t budget;
+
+    if (!out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    budget = claw_core_window_get() +
+             CLAW_TIER_PROJECT_TRIGGER_CHARS +
+             CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
+
+    *out = s_ctx_stats;
+    out->window_bytes = claw_core_window_get();
+    out->est_budget_bytes = budget;
+    out->refuse_limit_bytes = budget;
+    out->block_have_bytes = claw_core_serialize_block_have();
+    return ESP_OK;
+}
+
 /* ===== serialize guard (added) =============================================
  * Every budget above governs one part of the request; nobody governed the total.
  * On a failing device task the parts summed past what the module could hold and
@@ -1015,34 +1038,40 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
                         CLAW_TIER_SERIALIZE_PREAMBLE_BYTES;
 
     bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
-    if (bytes < est_budget) {
+
+    /* C3: "does it fit the budget" and "can the device actually serialize it" are
+     * different questions. The budget bounds how much CONTEXT we allow; it says
+     * nothing about whether the heaps can hand the JSON writer one contiguous
+     * buffer of that size. Measured on device: a ~200 KB body sat comfortably
+     * inside a 336 KB budget and still died with "Out of memory serializing
+     * request", because the largest block was 63 KB - the guard returned before it
+     * ever looked. So look first, whatever the budget says, and treat either limit
+     * as a reason to degrade. */
+    size_t block_need = claw_core_serialize_block_need(bytes);
+    size_t block_have = claw_core_serialize_block_have();
+    bool over_budget = bytes >= est_budget;
+    bool over_block = block_have < block_need;
+
+    s_ctx_stats.last_body_bytes = bytes;
+    s_ctx_stats.last_block_need_bytes = block_need;
+    s_ctx_stats.last_block_have_bytes = block_have;
+
+    if (!over_budget && !over_block) {
         return ESP_OK;
     }
 
-    /* A2: contiguous block pre-check — ensure largest free block can hold est * 1.5 */
-    size_t required_block = (bytes * 3) / 2;
-    size_t largest_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    size_t largest_psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    size_t largest_total = largest_int + largest_psram;
-
-    if (largest_total < required_block) {
-        ESP_LOGW(TAG,
-                 "request body ~%u bytes needs %u contiguous block, have %u (int=%u psram=%u): trimming",
-                 (unsigned)bytes,
-                 (unsigned)required_block,
-                 (unsigned)largest_total,
-                 (unsigned)largest_int,
-                 (unsigned)largest_psram);
-    }
-
     ESP_LOGW(TAG,
-             "request body ~%u bytes >= %u budget: trimming by recovery cost (free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u)",
+             "request body ~%u B needs a %u B contiguous block, have %u; over %s: trimming by recovery "
+             "cost (free_int=%u largest_int=%u free_spiram=%u largest_spiram=%u)",
              (unsigned)bytes,
-             (unsigned)est_budget,
+             (unsigned)block_need,
+             (unsigned)block_have,
+             (over_budget && over_block) ? "budget and block"
+                                         : (over_block ? "the contiguous block" : "budget"),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)largest_int,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned)largest_psram);
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     /* A2: solve for message-budget from dynamic est_budget */
     preamble = (system_prompt ? strlen(system_prompt) : 0) +
@@ -1059,23 +1088,36 @@ esp_err_t claw_core_context_guard_request(const char *system_prompt,
                               NULL, 0);
 
     bytes = claw_core_request_body_bytes(system_prompt, messages, tools_json);
+    block_need = claw_core_serialize_block_need(bytes);
+    block_have = claw_core_serialize_block_have();
+    s_ctx_stats.trim_count++;
+    s_ctx_stats.last_folded = (uint32_t)stats.folded;
+    s_ctx_stats.last_omitted = (uint32_t)stats.omitted;
+    s_ctx_stats.last_blanked = (uint32_t)stats.blanked;
     ESP_LOGW(TAG,
-             "request body trimmed to ~%u bytes (folded=%u omitted=%u blanked=%u)",
-             (unsigned)bytes, (unsigned)stats.folded,
-             (unsigned)stats.omitted, (unsigned)stats.blanked);
+             "request body trimmed to ~%u B (needs %u B block, have %u B; folded=%u omitted=%u blanked=%u)",
+             (unsigned)bytes, (unsigned)block_need, (unsigned)block_have,
+             (unsigned)stats.folded, (unsigned)stats.omitted, (unsigned)stats.blanked);
+
     size_t refuse_limit = est_budget;  /* A2: refuse at the trigger, no overshoot */
-    if (bytes < refuse_limit) {
+    bool still_over_block = block_have < block_need;
+    if (bytes < refuse_limit && !still_over_block) {
         return ESP_OK;
     }
 
-    ESP_LOGE(TAG, "request body still ~%u bytes after shrinking; refusing the round", (unsigned)bytes);
+    s_ctx_stats.refuse_count++;
+    ESP_LOGE(TAG,
+             "request body still ~%u B after shrinking (needs %u B block, have %u B); refusing the round",
+             (unsigned)bytes, (unsigned)block_need, (unsigned)block_have);
     if (out_error_message) {
         *out_error_message = claw_utils_string_dup_printf(
-            "This turn's context is too large to send (%u bytes, limit %u). Nothing was sent and no "
-            "tool ran. Recover by: (1) calling pin_note with the goal, decisions and current state; "
-            "(2) starting a new session if the task is finished; (3) splitting the job into smaller "
-            "subagent tasks. Do not retry the same request unchanged.",
-            (unsigned)bytes, (unsigned)refuse_limit);
+            "This turn's context cannot be sent on this device: the request would be ~%u bytes and the "
+            "device can hand the serializer at most %u bytes in one block (that is the real limit here, "
+            "not the %u-byte context budget). Nothing was sent and no tool ran. Recover by: (1) calling "
+            "pin_note with the goal, decisions and current state; (2) starting a new session if the task "
+            "is finished; (3) splitting the job into smaller subagent tasks; (4) closing subagents you no "
+            "longer need, which frees memory immediately. Do not retry the same request unchanged.",
+            (unsigned)bytes, (unsigned)block_have, (unsigned)refuse_limit);
     }
     return ESP_ERR_INVALID_SIZE;
 }

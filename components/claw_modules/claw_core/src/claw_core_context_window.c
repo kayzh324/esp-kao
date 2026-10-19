@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -62,6 +63,38 @@ static size_t s_last_psram_largest = 0;
 size_t claw_core_window_get(void)
 {
     return s_window_size;
+}
+
+/* Serialization feasibility (added, C3). The byte budgets say how much context we
+ * allow; they say nothing about whether the heaps can hand the JSON writer ONE
+ * buffer of that size. On device a ~200 KB body passed a 336 KB budget and then
+ * died inside cJSON because the largest contiguous block was 63 KB. These two
+ * functions are what the guard has to compare, and they are also what makes the
+ * decision observable from a log or from get_system_info. */
+
+size_t claw_core_serialize_block_have(void)
+{
+    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    /* One allocation succeeds when the LARGER of the two can serve it: malloc
+     * prefers PSRAM but falls back to internal RAM, so the best case is the max.
+     * Reporting only the preferred heap would refuse requests that would work. */
+    return (psram_largest > internal_largest) ? psram_largest : internal_largest;
+}
+
+size_t claw_core_serialize_block_need(size_t body_bytes)
+{
+    /* The writer must obtain ONE contiguous buffer for the printed body (the cJSON
+     * tree itself is many small allocations, which fragmentation tolerates). 1.5x
+     * is the margin the hardening plan specified and it matches the observed
+     * failure: a ~200 KB body died with a 63 KB largest block. Deliberately not
+     * the 2.2x derived for W - that figure describes W's own headroom, and using
+     * it here would refuse requests the device can actually serialize. */
+    if (body_bytes > (SIZE_MAX / 2)) {
+        return SIZE_MAX;
+    }
+    return body_bytes + body_bytes / 2;
 }
 
 void claw_core_window_update(void)

@@ -82,6 +82,10 @@ Rules:
 - Reference bundled scripts in the skill body with `{CUR_SKILL_DIR}/scripts/<name>.lua`.
 - Every skill that includes one or more Lua scripts must document how each script is invoked, including the exact `{CUR_SKILL_DIR}/scripts/...` path, args schema, sync or async execution mode, timeout policy, exclusive group if any, and output/error handling.
 - Do not reference source-tree paths or FATFS output paths directly.
+- Keep `SKILL.md` small: everything in it is re-sent every round for as long as the skill stays
+  active. Aim for about an eighth of one round's budget and push detail into `references/`, which is
+  one `read_file` away. To slim or split an existing skill (or when a `SKILL.md` is already too large),
+  activate the `skill_slimming` skill instead of editing sizes by feel.
 
 ## Create A Skill
 

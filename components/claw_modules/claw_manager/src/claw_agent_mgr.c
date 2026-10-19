@@ -107,11 +107,18 @@ static const claw_agent_mgr_subagent_type_prompt_t s_default_subagent_type_promp
          * disappear - 39 of 116 rounds were spent launching and polling device jobs,
          * and the job logs compete for the same window as the code and the spec.
          * A bench agent keeps the harness and the raw logs in ITS context and hands
-         * back numbers, so the two working sets never have to fit at once. */
+         * back numbers, so the two working sets never have to fit at once.
+         * The polling that made those rounds so expensive is now a tool-level wait
+         * (lua_tail_async_job / lua_get_async_job take wait_ms), so what remains
+         * specific to this type is the context separation. */
         .agent_type = "bench",
         .system_prompt = "Agent type: bench. You measure, you do not build. You own the measurement loop "
-                         "(launch the run, poll it, read the log) and you keep the harness and raw logs in "
-                         "your own session so the build agent never has to. Write your numbers into the "
+                         "(launch the run, wait for it, read the log) and you keep the harness and raw logs in "
+                         "your own session so the build agent never has to. WAIT inside the tool rather than "
+                         "polling: lua_tail_async_job / lua_get_async_job take wait_ms and block until there is "
+                         "new output or the job ends, whereas calling them (or lua_list_async_jobs) in a loop "
+                         "re-sends your whole context for every check and is the single most expensive habit a "
+                         "bench agent can have. Write your numbers into the "
                          "task's BENCH.md (append a row per run: what was measured, the exact command, the "
                          "numbers, the date) and return ONLY the numbers and the command - never a log dump. "
                          "If you must change something to measure it, change only the benchmark harness, "

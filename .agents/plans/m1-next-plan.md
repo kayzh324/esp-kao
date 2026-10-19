@@ -58,7 +58,7 @@
 - **你的实测问题**：真实任务里子 agent 的长回报是否完整到达 root（不再出现"报告被截断"）？
 - **风险/回退**：`.reports` 占空间 → 复用 10 min prune；回退 = 恢复直发通知。
 
-### C2 — 轮数：长跑作业的等待语义（最大杠杆）
+### C2 — 轮数：长跑作业的等待语义（最大杠杆）✅ **已实施，待你的实测验收（见 §7）**
 
 - **依据**：`sa12` 的 44/88 轮纯轮询 = 全任务 **24%** 输入；同批 `sa07`/`sa04` 用阻塞式 `lua_tail_async_job` 只查 3 次——**工具存在但默认做法不对**。
 - **改动**：(a) 让"等一个作业"只有一种自然做法：`lua_get_async_job` 支持阻塞等待（等到完成或超时），或规定测量类 agent 只能用 tail/wait；(b) 根提示词 + bench/recon 类型提示词 + `dev_workflow` 明确禁止轮询 `list/get` 循环。
@@ -159,7 +159,8 @@
 - **组件测试**：新增用例 `subagent report spill writes the whole text to a readable path` → **PASS**
   （本板 15 例 6 失败；**回退我的测试改动后这 6 个失败依旧存在**，属测试 app 在本板配置下的既有问题，
   与本 cycle 无关）。
-- **设备**：`.reports` 可创建、目录内文件可被设备文件系统读取、`read_file` 只拒绝 `..`（回读契约成立）；
+- **设备**：`.reports` 可创建，且 dot 目录内的文件**能被 `read_file` 读回**
+  （`cap call read_file {"path":"/sdcard/.reports/probe.md"}` 返回内容）——回读契约成立；
   主 app 烧回后正常运行（`/api/status` 200，DATA=/sdcard）。
 - **未验证**：通知端到端（子 agent 长回报 → 通知携带路径、root 能 `read_file` 取回），
   **需要你的真实任务**。
@@ -176,3 +177,43 @@
 flash timing tuning 并 RTCWDT 重启）、**开启 PSRAM**（否则 spawn 准入一律拒绝，见 C7）。
 另：测试 app 的分区表与主 app 不同（factory 在 0x10000 vs 0x20000），**从测试 app 切回主 app 必须
 `bootloader-flash partition-table-flash app-flash`**，只烧 app 会让板子起不来。
+
+---
+
+## 7. C2 实施记录（2026-10-19）
+
+### 交付
+
+| 改动 | 文件 |
+|---|---|
+| `lua_tail_async_job` / `lua_get_async_job` 新增可选 `wait_ms`（≤30 s，默认 0＝原行为）：tail 等到**有新输出**或作业终局，get 等到**终局**；等待期间以 100 ms 本地定时轮询，且每轮按 id 重新解析作业（防槽位复用误判） | `cap_lua_async.c` / `cap_lua_internal.h` |
+| 两个工具的 schema/描述改为"用 wait_ms 等，不要在循环里反复读"；`lua_list_async_jobs` 明确"快照，不要用它等待" | `cap_lua.c` |
+| bench 类型提示词：删掉"poll it"，改为"在工具内等"并说明代价；常驻约定加一条"never poll: wait once, with a deadline"；`dev_workflow` 增同义条目 | `claw_agent_mgr.c` / `app_claw.c` / `dev_workflow/SKILL.md` |
+
+### 程序性验收（设备实测计时探针）
+
+用一个 ~6 s、每 2 s 打一行的探针作业：
+
+| 调用 | 观测 |
+|---|---|
+| `lua_run_script_async` | 起作业，返回 job_id |
+| `tail {"wait_ms":9000}` | **1.9 s 返回**，输出恰好到 `tick 1`（等到第一条新输出） |
+| `tail {"wait_ms":9000}` | **2.0 s 返回**，输出到 `tick 2` |
+| `get {"wait_ms":15000}` | 输出含 `tick 3` + `done` ⇒ **等到终局**才返回 |
+| `get {"wait_ms":15000}`（已终局） | **0.2 s** 立即返回 |
+| `tail`（无 wait_ms） | **0.2 s** 立即返回（原行为不变） |
+
+⇒ 阻塞语义与"不传则立即返回"的兼容性都成立；**单次等待替代一整串轮询轮**。
+
+### 你的验收问题
+
+> 一次真实任务（含设备实测的那种）里，**测量阶段的轮数是否明显下降**？
+> 具体看：bench/子 agent 是否还在反复 `lua_list_async_jobs` / `lua_get_async_job`；
+> 有没有出现"等太久"或"漏掉结果"的新问题（wait_ms 上限 30 s，超时会返回当前快照，不会丢）。
+
+### 顺带修正 + 一个操作陷阱
+
+- **HTTP 文件 API 的路径是相对 DATA 根的**（`/` 就是根），而**能力层（`read_file` 等）用的是绝对 VFS 路径**（`/sdcard/...`）。
+  C1 的设备验证里我用 `?path=/sdcard/...` 走 HTTP，实际在 DATA 根下造了一个名为 `sdcard` 的目录——
+  已删除，并在**真实路径**上重做了 `read_file` 回读验证（见 §6）。
+  ⇒ 后续所有设备文件操作：HTTP 用 `/tmp/x`，能力调用用 `/sdcard/tmp/x`。

@@ -89,13 +89,18 @@ esp_err_t cap_lua_async_run_and_wait(const cap_lua_async_job_t *job,
 esp_err_t cap_lua_async_list_jobs(const char *status_filter,
                                   char *output,
                                   size_t output_size);
+/* wait_ms > 0 makes the read block instead of returning immediately (added, C2):
+ * get waits for the job to reach a terminal state, tail waits for new log output.
+ * Both give up after wait_ms and return what they have. */
 esp_err_t cap_lua_async_get_job(const char *id_or_name,
+                                uint32_t wait_ms,
                                 char *output,
                                 size_t output_size);
 esp_err_t cap_lua_async_tail_job(const char *id_or_name,
                                  bool has_since_seq,
                                  uint64_t since_seq,
                                  size_t max_bytes,
+                                 uint32_t wait_ms,
                                  char *output,
                                  size_t output_size);
 esp_err_t cap_lua_async_stop_job(const char *id_or_name,

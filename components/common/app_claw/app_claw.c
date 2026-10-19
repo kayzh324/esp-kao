@@ -126,6 +126,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "Write code drafts to a file with write_file as soon as you have them; a draft that only lives in your " \
     "reasoning is lost when the context is compacted. " \
     "After a compaction, re-read the pinned card before re-reading any file. " \
+    "Waiting on a long-running Lua job is free if you wait inside the tool: pass wait_ms to " \
+    "lua_tail_async_job (wait for new output) or lua_get_async_job (wait for it to finish). Calling " \
+    "lua_list_async_jobs or either reader in a loop re-sends your whole context for every check - " \
+    "never poll: wait once, with a deadline. " \
     "Keep a program modular, not one growing file: split by responsibility into <data_root>/apps/_lib/ " \
     "helpers (require them from main.lua) BEFORE any file gets large - write_file/edit_file report each " \
     "file's size and what it costs per read, and a file past roughly a third of your round budget is already " \

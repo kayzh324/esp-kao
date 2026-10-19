@@ -583,6 +583,20 @@ static esp_err_t cap_lua_list_async_jobs_execute(const char *input_json,
     return err;
 }
 
+/* Optional blocking wait for the async-job readers (added, C2): reading a running
+ * job in a poll loop burns a whole model round per poll, so the readers accept a
+ * wait_ms and block inside the tool instead. 0 (the default) keeps the old
+ * immediate-read behaviour. */
+static uint32_t cap_lua_parse_wait_ms(const cJSON *root)
+{
+    const cJSON *wait = cJSON_GetObjectItem(root, "wait_ms");
+
+    if (!cJSON_IsNumber(wait) || wait->valueint <= 0) {
+        return 0;
+    }
+    return (uint32_t)wait->valueint;
+}
+
 static esp_err_t cap_lua_get_async_job_execute(const char *input_json,
                                                const claw_cap_call_context_t *ctx,
                                                char *output,
@@ -590,6 +604,7 @@ static esp_err_t cap_lua_get_async_job_execute(const char *input_json,
 {
     cJSON *root = NULL;
     const char *job_id = NULL;
+    uint32_t wait_ms;
     esp_err_t err;
 
     (void)ctx;
@@ -610,7 +625,8 @@ static esp_err_t cap_lua_get_async_job_execute(const char *input_json,
         return ESP_ERR_INVALID_ARG;
     }
 
-    err = cap_lua_async_get_job(job_id, output, output_size);
+    wait_ms = cap_lua_parse_wait_ms(root);
+    err = cap_lua_async_get_job(job_id, wait_ms, output, output_size);
     cJSON_Delete(root);
     return err;
 }
@@ -672,6 +688,7 @@ static esp_err_t cap_lua_tail_async_job_execute(const char *input_json,
                                  has_since_seq,
                                  since_seq,
                                  max_bytes,
+                                 cap_lua_parse_wait_ms(root),
                                  output,
                                  output_size);
     cJSON_Delete(root);
@@ -719,7 +736,9 @@ static const claw_cap_descriptor_t s_lua_descriptors[] = {
         .id = "lua_list_async_jobs",
         .name = "lua_list_async_jobs",
         .family = "automation",
-        .description = "List Lua async jobs by optional status filter.",
+        .description =
+        "List Lua async jobs by optional status filter. A snapshot only: never call it in a loop "
+        "to wait for progress - use lua_tail_async_job with wait_ms for that.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json =
@@ -730,11 +749,16 @@ static const claw_cap_descriptor_t s_lua_descriptors[] = {
         .id = "lua_get_async_job",
         .name = "lua_get_async_job",
         .family = "automation",
-        .description = "Get status, summary, and recent logs for a Lua async job by job_id or name.",
+        .description =
+        "Get status, summary, and recent logs for a Lua async job by job_id or name. "
+        "Pass wait_ms to WAIT until the job finishes (or the wait runs out) and get the status "
+        "then - one call instead of a poll loop. Use wait_ms for anything that takes seconds.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json =
-        "{\"type\":\"object\",\"properties\":{\"job_id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}}}",
+        "{\"type\":\"object\",\"properties\":{\"job_id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},"
+        "\"wait_ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":30000,"
+        "\"description\":\"Block up to this long (<=30000) for the job to reach a terminal state.\"}}}",
         .execute = cap_lua_get_async_job_execute,
     },
     {
@@ -743,13 +767,17 @@ static const claw_cap_descriptor_t s_lua_descriptors[] = {
         .family = "automation",
         .description =
         "Read incremental logs for a Lua async job by job_id or name. Pass since_seq from the "
-        "previous log_next_seq to continue reading only new log text.",
+        "previous log_next_seq to continue reading only new log text. Pass wait_ms to WAIT until "
+        "there is new output or the job finishes - this is how you wait on a running job, instead "
+        "of calling this or lua_list_async_jobs again and again.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json =
         "{\"type\":\"object\",\"properties\":{\"job_id\":{\"type\":\"string\"},"
         "\"name\":{\"type\":\"string\"},\"since_seq\":{\"type\":\"integer\",\"minimum\":0},"
-        "\"max_bytes\":{\"type\":\"integer\",\"minimum\":1}}}",
+        "\"max_bytes\":{\"type\":\"integer\",\"minimum\":1},"
+        "\"wait_ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":30000,"
+        "\"description\":\"Block up to this long (<=30000) for new output or a terminal state.\"}}}",
         .execute = cap_lua_tail_async_job_execute,
     },
     {

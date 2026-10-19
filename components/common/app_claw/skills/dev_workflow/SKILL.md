@@ -125,6 +125,10 @@ times, and the task's inputs alone very nearly filled the window, leaving no roo
   is a big, repeated loop. Hand it to ONE `bench` agent (reuse it with `send_agent_followup` for every
   measurement in the task) and take back only the numbers, which it writes to `BENCH.md`. Your window
   keeps the code and the spec; its window keeps the harness and the logs.
+- **Wait inside the tool, never in a loop.** `lua_tail_async_job` and `lua_get_async_job` take `wait_ms`
+  and block until there is new output or the job ends. Calling them (or `lua_list_async_jobs`) again and
+  again re-sends your whole context for every check: one real bench agent spent half of its rounds doing
+  exactly that. One wait with a deadline replaces a dozen rounds.
 - **Modularize, do not append.** When a file would grow past the size above, stop adding to it: put the new
   responsibility in `<data_root>/apps/_lib/<name>.lua` and `require` it from `main.lua` (see the
   `app_layout` skill). A single `main.lua` that keeps getting longer is a defect, not progress - it is

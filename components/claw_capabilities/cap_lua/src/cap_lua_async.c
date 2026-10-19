@@ -1247,7 +1247,69 @@ esp_err_t cap_lua_async_list_jobs(const char *status_filter,
     return ESP_OK;
 }
 
+/* Blocking waits (added, C2). Watching a long-running job by calling list/get in a
+ * loop costs one full model round per poll - measured on device: one bench
+ * subagent spent 44 of its 88 tool rounds polling a running job, about a quarter
+ * of the whole task's input tokens. Waiting inside the tool costs nothing
+ * instead: the poll below is a local 100 ms timer, not a model round.
+ * The job is re-resolved by id on every iteration so a recycled slot cannot be
+ * mistaken for the job that was asked about. */
+#define CAP_LUA_ASYNC_WAIT_POLL_MS 100
+/* Bounds how long one tool call can block the agent loop. The call runs in a
+ * tool phase, not an idle one, so the liveness reaper does not read it as a wedge. */
+#define CAP_LUA_ASYNC_WAIT_MAX_MS  30000
+
+static bool cap_lua_wait_for_job(const char *id_or_name, uint64_t since_seq, bool wait_terminal,
+                                 uint32_t wait_ms)
+{
+    int64_t deadline = esp_timer_get_time() + (int64_t)wait_ms * 1000;
+
+    if (wait_ms > CAP_LUA_ASYNC_WAIT_MAX_MS) {
+        wait_ms = CAP_LUA_ASYNC_WAIT_MAX_MS;
+        deadline = esp_timer_get_time() + (int64_t)wait_ms * 1000;
+    }
+
+    while (true) {
+        bool done = false;
+
+        if (xSemaphoreTake(s_job_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            int slot = cap_lua_find_slot_by_id_or_name_locked(id_or_name);
+
+            if (slot < 0) {
+                done = true;   /* the job is gone: nothing left to wait for */
+            } else {
+                done = cap_lua_status_is_terminal(s_jobs[slot].status) ||
+                       (!wait_terminal && s_jobs[slot].log_seq > since_seq);
+            }
+            xSemaphoreGive(s_job_lock);
+        }
+
+        if (done || esp_timer_get_time() >= deadline) {
+            return done;
+        }
+        vTaskDelay(pdMS_TO_TICKS(CAP_LUA_ASYNC_WAIT_POLL_MS));
+    }
+}
+
+/* Current log sequence of a job, or 0 when it cannot be resolved. Used to turn
+ * "wait for output from now on" into a concrete sequence number. */
+static uint64_t cap_lua_job_log_seq(const char *id_or_name)
+{
+    uint64_t seq = 0;
+
+    if (xSemaphoreTake(s_job_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        int slot = cap_lua_find_slot_by_id_or_name_locked(id_or_name);
+
+        if (slot >= 0) {
+            seq = s_jobs[slot].log_seq;
+        }
+        xSemaphoreGive(s_job_lock);
+    }
+    return seq;
+}
+
 esp_err_t cap_lua_async_get_job(const char *id_or_name,
+                                uint32_t wait_ms,
                                 char *output,
                                 size_t output_size)
 {
@@ -1258,6 +1320,10 @@ esp_err_t cap_lua_async_get_job(const char *id_or_name,
         return ESP_ERR_INVALID_ARG;
     }
     output[0] = '\0';
+
+    if (wait_ms > 0) {
+        cap_lua_wait_for_job(id_or_name, 0, true, wait_ms);
+    }
 
     recent_log = calloc(1, recent_log_size);
     if (!recent_log) {
@@ -1319,6 +1385,7 @@ esp_err_t cap_lua_async_tail_job(const char *id_or_name,
                                  bool has_since_seq,
                                  uint64_t since_seq,
                                  size_t max_bytes,
+                                 uint32_t wait_ms,
                                  char *output,
                                  size_t output_size)
 {
@@ -1329,6 +1396,15 @@ esp_err_t cap_lua_async_tail_job(const char *id_or_name,
         return ESP_ERR_INVALID_ARG;
     }
     output[0] = '\0';
+
+    if (wait_ms > 0) {
+        /* Wait for the job to produce something new (or to finish) before
+         * reading, instead of making the caller poll. Without an explicit
+         * since_seq the wait baseline is the sequence as of now. */
+        uint64_t baseline = has_since_seq ? since_seq : cap_lua_job_log_seq(id_or_name);
+
+        (void)cap_lua_wait_for_job(id_or_name, baseline, false, wait_ms);
+    }
 
     if (max_bytes == 0) {
         max_bytes = CAP_LUA_ASYNC_LOG_TAIL_DEFAULT_BYTES;

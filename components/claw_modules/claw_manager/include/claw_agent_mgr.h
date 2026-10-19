@@ -31,6 +31,16 @@ extern "C" {
 #define CLAW_AGENT_MGR_SPAWN_MIN_INTERNAL_FREE_BYTES CLAW_TIER_SPAWN_MIN_INTERNAL_FREE_BYTES
 #define CLAW_AGENT_MGR_SPAWN_MIN_PSRAM_BLOCK_BYTES   CLAW_TIER_SPAWN_MIN_PSRAM_BLOCK_BYTES
 
+/* Terminal-text reporting (added, C1). A subagent's outcome reaches the parent
+ * only through a notification, and that notification is bounded. Bodies above the
+ * inline budget are written in full under <DATA>/.reports/ and the notification
+ * carries a head plus this path (the parent reads it with read_file).
+ * LAST_ERROR_SIZE covers a full OOM diagnostic: the old 96-byte buffers cut the
+ * string right before its most actionable field (the largest free block). */
+#define CLAW_AGENT_MGR_LAST_ERROR_SIZE   192
+#define CLAW_AGENT_MGR_REPORT_PATH_MAX   160
+#define CLAW_AGENT_MGR_REPORT_INLINE_MAX 384
+
 typedef enum {
     CLAW_AGENT_MGR_STATUS_EMPTY = 0,
     CLAW_AGENT_MGR_STATUS_RUNNING,
@@ -79,7 +89,10 @@ typedef struct {
     claw_agent_mgr_status_t status;
     claw_core_agent_loop_phase_t phase;
     uint32_t last_request_id;
-    char last_error[96];
+    char last_error[CLAW_AGENT_MGR_LAST_ERROR_SIZE];
+    /* Path of the full terminal report/error spilled by the notification path
+     * (added, C1); empty when the text fit inline. Readable with read_file. */
+    char report_path[CLAW_AGENT_MGR_REPORT_PATH_MAX];
 } claw_agent_mgr_agent_info_t;
 
 esp_err_t claw_agent_mgr_init(const claw_agent_mgr_config_t *config);

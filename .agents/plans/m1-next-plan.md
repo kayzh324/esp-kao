@@ -50,7 +50,7 @@
 
 ## 3. Cycle 清单
 
-### C1 — 回报不截断 + 诊断不截断（最小改动，先解除诊断盲区）
+### C1 — 回报不截断 + 诊断不截断（最小改动，先解除诊断盲区）✅ **已实施，待你的实测验收（见 §6）**
 
 - **依据**：OOM 诊断串被 768 B 通知上限截掉最有用的 `largest_psram`，导致无法区分"PSRAM 碎片"还是"内部 RAM 不足"；方案 B1 未做。
 - **改动**：子 agent 终局文本全文落盘 `<DATA>/.reports/<session>_<req>.md`（复用 `.toolout` 的 sanitize/prune 思路）；通知 = head(≤512 B) + `[full report: <path>]`；`inspect_agent` 增加 `report_path` 字段；**OOM/拒绝的错误串走同一套，保证字段不被截**。
@@ -101,6 +101,27 @@
 | Stage 3 无进展熔断 | 兜底，不用于可预期路径（误报风险高） |
 | `skill_creator` 与 `skill_slimming` 交叉引用 | 文档改动 |
 
+### C7 — 弱硬件兼容（**C1 实施中实测发现**，直接影响"弱硬件能否跑"）
+
+两条都是既有缺陷，与 C1 无关，但都在"基座硬件适配"这条评估主线上，且**当前会让某类板子整体不可用**：
+
+1. **spawn 准入是 PSRAM 硬要求**：`claw_agent_mgr.c` 无条件检查
+   `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= CLAW_TIER_SPAWN_MIN_PSRAM_BLOCK_BYTES`。
+   无 PSRAM 时该值为 0 ⇒ **每一次 `spawn_agent` 都被拒**，即"无 PSRAM 的板子永远无法派发子 agent"。
+   方案 §A0 说"无 PSRAM 板自动回落"，但准入没有这条回落。测试 app 未开 PSRAM 时 13/15 用例
+   因此失败，这是直接证据。
+2. **DATA 在内部 flash 时，核心任务写文件会断言重启**：`claw_task.c` 优先把核心任务栈分配在 PSRAM
+   （`MALLOC_CAP_SPIRAM`），而写内部 flash 时必须关 cache，`spi_flash_disable_interrupts_caches_and_other_cpu`
+   的 `esp_task_stack_is_sane_cache_disabled()` 会断言失败 → `RTC_SW_CPU_RST`。
+   **凡是从核心任务写 DATA 的路径都受影响**：会话持久化、`pin_note`、`.toolout`、`.versions`、`.reports`。
+   只有"PSRAM **且** DATA 在内部 flash"（即无 SD 的 PSRAM 板）才触发——本板走 SD 所以从未暴露。
+
+- **验收**：程序性——无 PSRAM 构建下 `spawn_agent` 不再一律被拒；DATA 指向内部 FATFS 时
+  写文件路径不再断言（可用测试 app 复现：开 PSRAM + DATA=/fatfs）。
+- **风险**：回落阈值需要定标（内部 RAM 的连续块比 PSRAM 紧张得多）；写路径可能要为内部 flash 情况
+  降低核心任务栈位置或改由一个内部栈的辅助任务落盘。
+- **优先级由你定**：你的板子（PSRAM + SD）不受影响，但这两条决定了"弱硬件兼容"能覆盖到哪些板型。
+
 ---
 
 ## 4. 基准任务（验收统一用这个场景）
@@ -117,3 +138,41 @@
 - 项目代码改动加 `(added)` 注释，便于日后 upstream merge 判断取舍（[[upstream-merge-comments]]）。
 - 判据（[[agent-opt-milestone]] §0）：改动要让模型**少发**还是**少记**；导致重读/重推就是负债。
 - 里程碑未达标的两条（零 OOM、零人工介入）是硬目标，任何 cycle 不得以牺牲它们换取 token 数字。
+
+---
+
+## 6. C1 实施记录（2026-10-19）
+
+### 交付
+
+| 改动 | 文件 |
+|---|---|
+| 终局文本全文落盘 `<DATA>/.reports/`（带 60 min prune、SD 瞬时失败重试一次） | 新增 `claw_manager/src/claw_agent_mgr_report.{c,h}` |
+| 通知 = 开头 + `[full report: <path>]`；落盘失败时显式写 `[report truncated: spill unavailable]` | `claw_agent_mgr.c` |
+| 通知正文按 UTF-8 边界裁剪，**保证结尾标签与路径永不被截** | `claw_agent_mgr.c`（`claw_agent_mgr_append_body`） |
+| `last_error` 缓冲 96 → 192；`inspect_agent` 增加 `report_path`（并改用 cJSON 生成，避免错误串里的引号破坏 JSON） | `claw_agent_mgr.h` / `cap_agent_mgr.c` |
+| OOM 诊断串字段重排：`largest_int` / `largest_psram` 提前 | 两个 LLM 后端 |
+
+### 程序性验收结果
+
+- **编译**：主 app 与 agent_mgr 测试 app 均零警告。
+- **组件测试**：新增用例 `subagent report spill writes the whole text to a readable path` → **PASS**
+  （本板 15 例 6 失败；**回退我的测试改动后这 6 个失败依旧存在**，属测试 app 在本板配置下的既有问题，
+  与本 cycle 无关）。
+- **设备**：`.reports` 可创建、目录内文件可被设备文件系统读取、`read_file` 只拒绝 `..`（回读契约成立）；
+  主 app 烧回后正常运行（`/api/status` 200，DATA=/sdcard）。
+- **未验证**：通知端到端（子 agent 长回报 → 通知携带路径、root 能 `read_file` 取回），
+  **需要你的真实任务**。
+
+### 你的验收问题
+
+> 一次真实任务里，子 agent 的长回报是否**完整到达** root？
+> 具体看：通知是否出现 `[full report: /sdcard/.reports/...]`；root 是否读回该文件；
+> 是否还出现"报告被截断"的观感。
+
+### 测试 app 环境备注（本板）
+
+测试 app 的 `sdkconfig`（gitignored，已就地修改）需要：flash 频率 **80 MHz**（原 120 MHz 会挂在
+flash timing tuning 并 RTCWDT 重启）、**开启 PSRAM**（否则 spawn 准入一律拒绝，见 C7）。
+另：测试 app 的分区表与主 app 不同（factory 在 0x10000 vs 0x20000），**从测试 app 切回主 app 必须
+`bootloader-flash partition-table-flash app-flash`**，只烧 app 会让板子起不来。

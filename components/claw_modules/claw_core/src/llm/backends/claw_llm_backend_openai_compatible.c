@@ -344,13 +344,16 @@ static esp_err_t build_chat_body(const openai_compatible_backend_ctx_t *ctx,
     post_data = cJSON_PrintBuffered(body, (int)body_est, false);
     cJSON_Delete(body);
     if (!post_data) {
+        /* The two largest-block numbers decide the diagnosis (which heap cannot
+         * serve a contiguous buffer), so they come first: a bounded notification
+         * may still cut the tail. */
         *out_error_message = dup_printf(
-            "Out of memory serializing request (~%u B; free_int=%u largest_int=%u free_psram=%u largest_psram=%u)",
+            "Out of memory serializing request (~%u B; largest_int=%u largest_psram=%u free_int=%u free_psram=%u)",
             (unsigned)body_est,
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return ESP_ERR_NO_MEM;
     }
 

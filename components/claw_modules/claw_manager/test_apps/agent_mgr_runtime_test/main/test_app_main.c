@@ -17,6 +17,8 @@
 #include "claw_cap.h"
 #include "claw_core.h"
 #include "claw_core_llm.h"
+#include "claw_paths.h"
+#include "claw_agent_mgr_report.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -559,6 +561,9 @@ static void ensure_runtime_ready(void)
     }
 
     ensure_backend_registered();
+    /* The report spill (C1) writes under the writable DATA root, exactly as the
+     * application does; without it the spill cannot run. */
+    TEST_ASSERT_EQUAL(ESP_OK, claw_paths_set(CLAW_PATH_DATA, TEST_FATFS_BASE_PATH));
     TEST_ASSERT_EQUAL(ESP_OK, claw_session_mgr_set_session_root_dir(TEST_SESSION_ROOT));
     TEST_ASSERT_EQUAL(ESP_OK, claw_session_mgr_set_delete_session_handler(test_delete_session_history, NULL));
     TEST_ASSERT_EQUAL(ESP_OK, claw_cap_init());
@@ -1233,6 +1238,66 @@ TEST_CASE("child completion notification is injected into stored parent session"
                                             CLAW_CORE_CONTEXT_RECORD_USER,
                                             "<subagent_completed"));
     close_agent_if_set(&ctx, agent_id);
+}
+
+/* C1: a subagent's terminal text that does not fit a notification is written in
+ * full under <DATA>/.reports/ and the notification carries a head plus this path,
+ * so nothing the parent needs is lost.
+ *
+ * Called directly from the test task rather than through a subagent completion:
+ * this test app's DATA root is the internal-flash FATFS partition, and a
+ * claw_core task (which is what runs the completion observer) gets its stack in
+ * PSRAM, so a flash write from there trips
+ * esp_task_stack_is_sane_cache_disabled(). The notification plumbing itself is
+ * covered by the completion tests above; the end-to-end form belongs on a device
+ * whose DATA root is not internal flash. */
+TEST_CASE("subagent report spill writes the whole text to a readable path",
+          "[claw_agent_mgr][report_spill]")
+{
+    static const char head[] = "REPORT-HEAD ";
+    static const char tail[] = " REPORT-TAIL";
+    const size_t total = 1200;
+    char path[CLAW_AGENT_MGR_REPORT_PATH_MAX] = {0};
+    char body[96] = {0};
+    char *text = NULL;
+    struct stat st = {0};
+    FILE *file = NULL;
+    size_t i;
+
+    ensure_runtime_ready();
+
+    text = malloc(total + 1);
+    TEST_ASSERT_NOT_NULL(text);
+    memcpy(text, head, sizeof(head) - 1);
+    i = sizeof(head) - 1;
+    while (i < total - (sizeof(tail) - 1)) {
+        text[i++] = 'x';
+    }
+    memcpy(text + i, tail, sizeof(tail));
+
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      claw_agent_mgr_report_spill("chat:spill:parent:subagent_07",
+                                                  42,
+                                                  "report",
+                                                  text,
+                                                  path,
+                                                  sizeof(path)));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(path, ".reports/"), "report is not under .reports/");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(path, "subagent_07"), "report name lost the agent suffix");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(path, "42"), "report name lost the request id");
+
+    TEST_ASSERT_EQUAL(0, stat(path, &st));
+    TEST_ASSERT_EQUAL_MESSAGE((int)total, (int)st.st_size, "spilled report is not the whole text");
+
+    file = fopen(path, "rb");
+    TEST_ASSERT_NOT_NULL(file);
+    TEST_ASSERT_TRUE(fread(body, 1, sizeof(body) - 1, file) > 0);
+    fclose(file);
+    body[sizeof(body) - 1] = '\0';
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(body, head), "spilled file does not start with the report");
+
+    TEST_ASSERT_EQUAL(0, unlink(path));
+    free(text);
 }
 
 TEST_CASE("direct close releases subagent core memory across resume cycles",

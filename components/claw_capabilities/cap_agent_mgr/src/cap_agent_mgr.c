@@ -208,15 +208,41 @@ static esp_err_t cap_agent_mgr_inspect_execute(const char *input_json,
         return err;
     }
 
-    snprintf(output,
-             output_size,
-             "{\"agent_id\":\"%s\",\"status\":\"%s\",\"phase\":\"%s\",\"last_request_id\":%" PRIu32 ",\"agent_type\":\"%s\",\"last_error\":\"%s\"}",
-             info.agent_id,
-             claw_agent_mgr_status_to_string(info.status),
-             cap_agent_mgr_phase_to_string(info.phase),
-             info.last_request_id,
-             info.agent_type,
-             info.last_error);
+    {
+        /* Built with cJSON rather than an snprintf format (added, C1): last_error
+         * now carries a whole diagnostic string that may contain quotes, and a
+         * hand-rolled JSON format would emit invalid JSON for it. */
+        cJSON *out = cJSON_CreateObject();
+        char *json;
+
+        if (!out) {
+            snprintf(output, output_size, "Error: out of memory.");
+            return ESP_ERR_NO_MEM;
+        }
+        cJSON_AddStringToObject(out, "agent_id", info.agent_id);
+        cJSON_AddStringToObject(out, "status", claw_agent_mgr_status_to_string(info.status));
+        cJSON_AddStringToObject(out, "phase", cap_agent_mgr_phase_to_string(info.phase));
+        cJSON_AddNumberToObject(out, "last_request_id", (double)info.last_request_id);
+        cJSON_AddStringToObject(out, "agent_type", info.agent_type);
+        cJSON_AddStringToObject(out, "last_error", info.last_error);
+        /* report spill (added, C1): present only when the terminal text did not fit
+         * in the notification; the root reads the full text from this path. */
+        if (info.report_path[0]) {
+            cJSON_AddStringToObject(out, "report_path", info.report_path);
+        }
+        json = cJSON_PrintUnformatted(out);
+        cJSON_Delete(out);
+        if (!json) {
+            snprintf(output, output_size, "Error: out of memory.");
+            return ESP_ERR_NO_MEM;
+        }
+        if (strlcpy(output, json, output_size) >= output_size) {
+            free(json);
+            snprintf(output, output_size, "Error: inspect_agent result is too large.");
+            return ESP_ERR_INVALID_SIZE;
+        }
+        free(json);
+    }
     return ESP_OK;
 }
 

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "claw_agent_mgr.h"
-
+#include "claw_agent_mgr_report.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -151,7 +151,9 @@ typedef struct {
     claw_core_handle_t core;
     claw_cap_core_call_user_ctx_t cap_user_ctx;
     uint32_t last_request_id;
-    char last_error[96];
+    char last_error[CLAW_AGENT_MGR_LAST_ERROR_SIZE];
+    /* report spill (added, C1): path of the last terminal text written in full. */
+    char last_report_path[CLAW_AGENT_MGR_REPORT_PATH_MAX];
 } claw_agent_mgr_agent_t;
 
 typedef struct {
@@ -864,6 +866,33 @@ static bool claw_agent_mgr_deliver_to_parent(const claw_agent_mgr_parent_route_t
     return false;
 }
 
+/* Append the terminal body and then the closing tag into an already-written open
+ * tag. The body is cut so `close` always survives - close may carry the path of
+ * the spilled full text, and a truncated path would make the spill unreachable
+ * (worse than a truncated head). Cuts on a UTF-8 boundary. */
+static void claw_agent_mgr_append_body(char *text, size_t text_size, size_t used,
+                                       const char *body, const char *close)
+{
+    size_t close_len = strlen(close);
+    size_t body_len = strlen(body);
+    size_t budget;
+
+    if (used + 1U >= text_size) {
+        return;
+    }
+    budget = text_size - used - 1U;
+    budget = (budget > close_len + 1U) ? budget - close_len : 0;
+    if (budget > body_len) {
+        budget = body_len;
+    }
+    while (budget > 0 && budget < body_len && ((unsigned char)body[budget] & 0xC0) == 0x80) {
+        budget--;
+    }
+    memcpy(text + used, body, budget);
+    text[used + budget] = '\0';
+    strlcat(text, close, text_size);
+}
+
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx)
 {
@@ -871,6 +900,7 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
     claw_agent_mgr_parent_route_t route;
     uint32_t notify_request_id = 0;
     char text[CLAW_AGENT_MGR_NOTIFY_TEXT_SIZE];
+    char report_path[CLAW_AGENT_MGR_REPORT_PATH_MAX];
     static const char truncated_suffix[] = "\n[truncated]\n</subagent_completed>";
     bool failed = false;
     int written;
@@ -878,6 +908,7 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
     if (!summary || !agent || !agent->parent_session_id[0]) {
         return;
     }
+    report_path[0] = '\0';
 
     switch (summary->completion_type) {
     case CLAW_CORE_COMPLETION_LIMIT_REACHED:
@@ -891,7 +922,8 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
                            summary->request_id);
         break;
     case CLAW_CORE_COMPLETION_FAILED: {
-        char safe_error[96];
+        char safe_error[CLAW_AGENT_MGR_LAST_ERROR_SIZE];
+        char close[CLAW_AGENT_MGR_REPORT_PATH_MAX + 48];
         const char *src = (summary->error_message && summary->error_message[0]) ?
                           summary->error_message : "unknown error";
         size_t i = 0;
@@ -903,14 +935,34 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
         }
         safe_error[i] = '\0';
         failed = true;
+        /* report spill (added, C1): a long error - an OOM diagnostic, whose tail
+         * names the heap that ran out - is written in full so the parent can read
+         * past the attribute; the attribute itself is no longer cut at 96 bytes. */
+        if (strlen(src) >= sizeof(safe_error)) {
+            (void)claw_agent_mgr_report_spill(agent->session_id, summary->request_id, "error",
+                                              src, report_path, sizeof(report_path));
+            if (report_path[0]) {
+                snprintf(close, sizeof(close), "\n[full error: %s]\n</subagent_failed>", report_path);
+            } else {
+                strlcpy(close, "\n[error truncated: spill unavailable]\n</subagent_failed>",
+                        sizeof(close));
+            }
+        } else {
+            strlcpy(close, "\n</subagent_failed>", sizeof(close));
+        }
         written = snprintf(text,
                            sizeof(text),
-                           "<subagent_failed agent_id=\"%s\" request_id=\"%" PRIu32 "\" error=\"%s\">"
-                           "The subagent stopped on an error. inspect_agent reports its last_error. "
-                           "Retry it via send_agent_followup, or close_agent to stop it.</subagent_failed>",
+                           "<subagent_failed agent_id=\"%s\" request_id=\"%" PRIu32 "\" error=\"%s\">\n",
                            agent->agent_id,
                            summary->request_id,
                            safe_error);
+        if (written >= 0 && (size_t)written < sizeof(text)) {
+            claw_agent_mgr_append_body(text, sizeof(text), (size_t)written,
+                                       "The subagent stopped on an error. inspect_agent reports its "
+                                       "last_error. Retry it via send_agent_followup, or close_agent "
+                                       "to stop it.", close);
+            written = (int)strlen(text);
+        }
         break;
     }
     case CLAW_CORE_COMPLETION_BLOCKED: {
@@ -942,14 +994,40 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
         break;
     }
     case CLAW_CORE_COMPLETION_DONE:
-    default:
+    default: {
+        const char *body = summary->final_text ? summary->final_text : "";
+        char close[CLAW_AGENT_MGR_REPORT_PATH_MAX + 48];
+
+        /* report spill (added, C1): the parent's only channel to a subagent's
+         * result is this notification, and it is bounded. Above the inline budget
+         * the whole text is written to <DATA>/.reports/ and the notification
+         * carries a head plus the path, which the parent reads with read_file. */
+        if (strlen(body) > CLAW_AGENT_MGR_REPORT_INLINE_MAX) {
+            (void)claw_agent_mgr_report_spill(agent->session_id, summary->request_id, "report",
+                                              body, report_path, sizeof(report_path));
+            /* Say so when the spill failed: a silently cut report would look like a
+             * complete one, and the parent would plan on half the evidence. */
+            if (report_path[0]) {
+                snprintf(close, sizeof(close), "\n[full report: %s]\n</subagent_completed>",
+                         report_path);
+            } else {
+                strlcpy(close, "\n[report truncated: spill unavailable]\n</subagent_completed>",
+                        sizeof(close));
+            }
+        } else {
+            strlcpy(close, "\n</subagent_completed>", sizeof(close));
+        }
         written = snprintf(text,
                            sizeof(text),
-                           "<subagent_completed agent_id=\"%s\" request_id=\"%" PRIu32 "\">\n%s\n</subagent_completed>",
+                           "<subagent_completed agent_id=\"%s\" request_id=\"%" PRIu32 "\">\n",
                            agent->agent_id,
-                           summary->request_id,
-                           summary->final_text ? summary->final_text : "");
+                           summary->request_id);
+        if (written >= 0 && (size_t)written < sizeof(text)) {
+            claw_agent_mgr_append_body(text, sizeof(text), (size_t)written, body, close);
+            written = (int)strlen(text);
+        }
         break;
+    }
     }
     if (written < 0) {
         return;
@@ -974,6 +1052,7 @@ static void claw_agent_mgr_completion_observer(const claw_core_completion_summar
     }
     agent->last_request_id = summary->request_id;
     agent->stuck_reported = false;
+    strlcpy(agent->last_report_path, report_path, sizeof(agent->last_report_path));
     if (failed) {
         agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
         snprintf(agent->last_error, sizeof(agent->last_error), "%s",
@@ -1146,6 +1225,8 @@ static void claw_agent_mgr_reap_stuck_once(void)
                            (uint32_t)(now_ms - agent->phase_since_ms) > stuck_ms) {
                     agent->stuck_reported = true;
                     agent->status = CLAW_AGENT_MGR_STATUS_ERROR;
+                    /* a wedge produces no terminal text, so there is nothing spilled */
+                    agent->last_report_path[0] = '\0';
                     snprintf(agent->last_error, sizeof(agent->last_error),
                              "idle for ~%u s while running", (unsigned)(stuck_ms / 1000));
                     snprintf(text, sizeof(text),
@@ -1601,6 +1682,7 @@ static void claw_agent_mgr_fill_info_locked(const claw_agent_mgr_agent_t *agent,
                       CLAW_CORE_AGENT_LOOP_PHASE_IDLE;
     out_info->last_request_id = agent->last_request_id;
     strlcpy(out_info->last_error, agent->last_error, sizeof(out_info->last_error));
+    strlcpy(out_info->report_path, agent->last_report_path, sizeof(out_info->report_path));
 }
 
 esp_err_t claw_agent_mgr_list_agents(const claw_cap_call_context_t *ctx,

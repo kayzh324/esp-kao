@@ -141,3 +141,28 @@ trim_count = refuse_count = 0
    `PROJECT_TRIGGER_CHARS`/`PREAMBLE`，而不是降 W。
 3. C7 的两条在这块板上**不会咬人**：DATA 在 SD（不触发内部 flash 写入断言），PSRAM 充足
    （不触发 spawn 准入拒绝）。C7 留给真正的弱板。
+
+### 按模型窗口重算 P4 档（2026-10-20）
+
+模型事实：`deepseek-v4.1-flash` 上下文 **1M tokens**、输出上限 **384K tokens**。
+按 input + max_tokens ≤ 窗口 算，输入预算上限 = 616K tokens；取中英/代码混合 **2.5 字符/token**
+换算，约 **1.54 MB 字符**。参考值：Anthropic 服务端压缩的默认触发是 150K tokens / 1M 窗口（15%）。
+
+| 宏 | 旧（估算） | 新 | 依据 |
+|---|---|---|---|
+| `RUNTIME_BUDGET_BYTES` | 256 KB | **640 KB** | 运行时窗口 = W；≈256K tokens = 窗口 25%；序列化峰值 2.2× ≈ 1.4 MB ≪ 20.9 MB |
+| `CTX_W_CEILING` | 256 KB | **640 KB** | 同上（P4 上 W 由 PSRAM 推导后必被此值夹住） |
+| `PROJECT_TRIGGER_CHARS` | 160 KB | **320 KB** | 回放压缩触发 ≈128K tokens = 窗口 13%，贴近参考的 15% |
+| `PROJECT_KEEP_CHARS` | 96 KB | **192 KB** | 保持原有 60% 比例 |
+| `SPAWN_MIN_INTERNAL_FREE_BYTES` | 256 KB | **96 KB** | **实测缺陷**：本板 idle 时 internal_free 只有 259 015 B < 262 144，**按原值每次 spawn 都会被拒** |
+
+合计预算 = 640 + 320 + 64 = **1.0 MB** ≈ 419K tokens = 窗口 42%；加 384K 输出后 80%，留 20% 余量。
+（若取 768 KB 则是 88%，太贴边，否掉。）
+
+设备实测（`get_system_info {"sections":["context"]}`）：
+`window_bytes=655360`、`est_budget_bytes=1048576`、`block_have_bytes=20971520`。
+
+未动：`TOOL_RESULT_MAX_BYTES` 48 KB、`RUNTIME_ARG_MAX_BYTES` 600、`PREAMBLE` 64 KB、
+`CAP_FILES_*` 128/128/256 KB —— 先观察第一轮任务再定。另发现 `SERIALIZE_REFUSE_BYTES` 与
+`SERIALIZE_EST_BUDGET_BYTES` 两个档位宏**无人使用**（闸门自己按 W+trigger+preamble 算），属死宏，
+待清理。

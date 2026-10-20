@@ -37,11 +37,11 @@
 #define CLAW_TIER_NAME "esp32p4"
 
 /* per-request budgets ---------------------------------------------------- */
-#define CLAW_TIER_RUNTIME_BUDGET_BYTES           (256 * 1024)
+#define CLAW_TIER_RUNTIME_BUDGET_BYTES           (640 * 1024)
 /* Dynamic window ceiling: the real per-request context cap (the window is derived
  * from free PSRAM, then clamped to this). On a P4 with tens of MB of PSRAM the
  * binding constraint is cost and model context, not memory - calibration knob #1. */
-#define CLAW_TIER_CTX_W_CEILING                  (256 * 1024)
+#define CLAW_TIER_CTX_W_CEILING                  (640 * 1024)
 #define CLAW_TIER_RUNTIME_KEEP_ROUNDS            16
 #define CLAW_TIER_RUNTIME_ARG_MAX_BYTES          600
 #define CLAW_TIER_TOOL_RESULT_MAX_BYTES          (48 * 1024)
@@ -70,8 +70,8 @@
 #define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (640 * 1024)
 
 /* session projection / summary ------------------------------------------ */
-#define CLAW_TIER_PROJECT_TRIGGER_CHARS          (160 * 1024)
-#define CLAW_TIER_PROJECT_KEEP_CHARS             (96 * 1024)
+#define CLAW_TIER_PROJECT_TRIGGER_CHARS          (320 * 1024)
+#define CLAW_TIER_PROJECT_KEEP_CHARS             (192 * 1024)
 #define CLAW_TIER_SUMMARY_MAX_CHARS              (16 * 1024)
 /* Was missing from this tier (found when the P4 target was first compiled): the
  * summarizer prompt sizes its output with this, so the tier did not build at all.
@@ -85,7 +85,7 @@
 
 /* subagent admission ----------------------------------------------------- */
 #define CLAW_TIER_SPAWN_PROMPT_MAX_BYTES         6144
-#define CLAW_TIER_SPAWN_MIN_INTERNAL_FREE_BYTES  (256 * 1024)
+#define CLAW_TIER_SPAWN_MIN_INTERNAL_FREE_BYTES  (96 * 1024)
 #define CLAW_TIER_SPAWN_MIN_PSRAM_BLOCK_BYTES    (1024 * 1024)
 
 /* task shape ------------------------------------------------------------- */

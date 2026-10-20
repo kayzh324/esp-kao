@@ -2,7 +2,20 @@
 
 - 日期：2026-10-21
 - 前置：批次 1（`a2299b95`）、批次 2（`e716c823`）已完成并真机验证
-- 状态：进行中
+- 状态：**代码完成，待真机验证**（板子 USB 串口中途消失，等待重新连接）
+
+## 执行记录（2026-10-21）
+
+| 项 | 结果 |
+|---|---|
+| SCD41 | 已改为 `lua_driver_i2c_ref_bus` + `cap_lua_hw_claim`，Lua API 不变 |
+| IMU / 磁力计 / SCI | 已采用上游实现（板载 device / 外接 chip 两种构造） |
+| QMI8658 | backend 已迁到新接口 + 原生 `i2c_master_transfer`，Kconfig/CMake/注册完成 |
+| 兼容层 | **未添加**（按最新原则：应用适配系统） |
+| 构建 | `esp32_S3_test_board` 与 `lichuang_dev_board` 均通过 |
+| 待办 | `compass` app 改到新构造函数与校准语义；`hwmap`/传感器读数真机验证 |
+
+**阻塞**：设备 USB 串口 `/dev/cu.usbserial-2120` 在批次中途消失，无法继续烧录与实测。恢复连接后继续。
 
 ## 1. 目标
 

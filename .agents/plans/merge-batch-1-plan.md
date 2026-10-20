@@ -13,6 +13,37 @@
 | 显示/启动器 | **暂缓到第 4 批**，第 1–3 批整体保留本地版本 |
 | 上游补丁 | 全量合并并通过测试前，不提交任何补丁建议 |
 
+## 执行记录（2026-10-20）
+
+| 项 | 结果 |
+|---|---|
+| 合并分支 | `merge/upstream-345073de` |
+| 合并提交 | `a2299b95` |
+| 构建 | `idf.py build` 通过（ESP32-S3） |
+| 烧录 + 启动 | 通过；无 panic；根 agent 初始化，动态窗口 `W=262144` |
+| 冲突 | 25 个文本冲突 + 4 个 modify/delete 全部解决 |
+| 与计划偏差 | `lua_module_camera` 也加入暂缓（新版依赖 esp_video 新 API，本地覆盖的 esp_video 较旧） |
+
+### 暂缓清单（实际）
+
+`lua_module_display`、`lua_module_lcd_touch`、`lua_module_lcd`、`lua_module_ledc`、
+`lua_module_lvgl`、`lua_module_vision`、`lua_module_imu`、`lua_module_magnetometer`、
+`lua_module_sci`、`lua_module_board_manager`、`lua_module_audio`、`lua_module_camera`、
+`display_service`、`system_ui`。
+
+### 已知问题
+
+1. **NVS 配置被清空**：上游新增 `cfg_ver`，旧 NVS 没有该键，首次启动执行了
+   `erase_all`，WiFi 与 LLM 配置丢失。已加兼容逻辑：缺 `cfg_ver` 但存在 `wifi_ssid`
+   时直接补写版本、不再清空。已清掉的配置需要重新录入。
+2. **启动器为空**：旧启动器依赖技能 `execution` 元数据，上游已移除该字段。
+   当前编译为空启动器（home/任务页正常），第 4 批切到 `app_registry`。
+3. **`app_registry` 启动告警**：`/sdcard/apps/*` 缺 `launcher.json`，属预期，
+   第 4 批补清单。
+4. **event router 启动规则失败**：`startup_refresh_ip_info` 的
+   `lua_run_script_async` 返回 `ESP_ERR_INVALID_STATE`，待查（可能与启动时序有关）。
+5. **audio_hub 启动失败**：板级无 codec（UAC 未插入），仅打错误日志，不影响启动。
+
 ## 0. 本阶段的硬约束
 
 1. **在全量合并完成并通过测试前，不向上游提交任何补丁建议**（issue / PR / patch 都不提）。

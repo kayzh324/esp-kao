@@ -867,6 +867,68 @@ static char *cap_files_replace_first(const char *src, const char *old_text, cons
     return result;
 }
 
+/* edit-miss hint (added): an exact-match edit fails when old_text was written from
+ * memory rather than copied. Point at the line that contains the FIRST line of
+ * old_text, so the correction is "look at line N and adjust" instead of re-reading
+ * the whole file. Measured: 5 misses in one task, each costing about a round. */
+static void cap_files_append_edit_miss_hint(const char *content, const char *old_text,
+                                            char *out, size_t out_size)
+{
+    char key[64];
+    size_t klen = 0;
+    const char *line = old_text;
+    const char *hit;
+    const char *line_start;
+    const char *line_end;
+    size_t lineno = 1;
+    size_t used;
+
+    if (!content || !old_text || !out || out_size == 0) {
+        return;
+    }
+    while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') {
+        line++;
+    }
+    while (line[klen] && line[klen] != '\r' && line[klen] != '\n' && klen + 1 < sizeof(key)) {
+        key[klen] = line[klen];
+        klen++;
+    }
+    while (klen > 0 && (key[klen - 1] == ' ' || key[klen - 1] == '\t')) {
+        klen--;
+    }
+    key[klen] = '\0';
+    if (klen < 4) {
+        return;   /* too short to identify anything useful */
+    }
+
+    hit = strstr(content, key);
+    if (!hit) {
+        return;
+    }
+    for (const char *p = content; p < hit; p++) {
+        if (*p == '\n') {
+            lineno++;
+        }
+    }
+    line_start = hit;
+    while (line_start > content && line_start[-1] != '\n') {
+        line_start--;
+    }
+    line_end = hit;
+    while (*line_end && *line_end != '\n') {
+        line_end++;
+    }
+    used = strlen(out);
+    if (used + 32 >= out_size) {
+        return;
+    }
+    snprintf(out + used, out_size - used,
+             " (hint: line %u contains the first line of old_text: %.*s)",
+             (unsigned)lineno,
+             (int)((line_end - line_start > 120) ? 120 : (line_end - line_start)),
+             line_start);
+}
+
 /* edit_file (added): anchored old_text -> new_text replacement on an existing
  * file. Prefer this over write_file for edits: the model emits only the changed
  * span instead of re-emitting the whole file. Each old_text must match exactly
@@ -981,6 +1043,7 @@ static esp_err_t cap_files_edit_file_execute(const char *input_json,
             snprintf(output, output_size,
                      "Error: edit #%u old_text not found; use read_file to see the exact current text",
                      (unsigned)applied);
+            cap_files_append_edit_miss_hint(content, old_text, output, output_size);
             result = ESP_ERR_NOT_FOUND;
             goto done;
         }
@@ -1497,6 +1560,51 @@ static esp_err_t cap_files_grep_recursive(const char *dir_path, const char *patt
     return ESP_OK;
 }
 
+/* grep_files matches plain text plus '|' alternation; there is no regex engine on
+ * this platform. Models still send regexes ("display\\.\\w+"), which match
+ * literally and silently return nothing - measured on device, that cost a round
+ * before the model retried with "display.". When the first search finds nothing
+ * and the pattern looks regex-ish, neutralize the regex syntax and search once
+ * more, labeling the result so the substitution stays visible.
+ * Returns true when a different, non-empty literal candidate was produced. */
+static bool cap_files_grep_literal_candidate(const char *pattern, char *out, size_t out_size)
+{
+    size_t j = 0;
+
+    if (!pattern || !out || out_size == 0) {
+        return false;
+    }
+    for (size_t i = 0; pattern[i]; i++) {
+        char c = pattern[i];
+
+        if (c == '\\' && pattern[i + 1]) {
+            char next = pattern[++i];
+
+            if (next == 'w' || next == 'W' || next == 'd' || next == 'D' ||
+                    next == 's' || next == 'S' || next == 'b' || next == 'B' ||
+                    next == 'n' || next == 't') {
+                continue;   /* character class or anchor: no literal equivalent */
+            }
+            if (next == '|') {
+                continue;   /* a literal pipe cannot be expressed */
+            }
+            c = next;       /* \\. -> '.', \\( -> '(', ... */
+        } else if (c == '*' || c == '+' || c == '?' || c == '^' || c == '$') {
+            continue;       /* quantifiers and anchors */
+        } else if (c == '[') {
+            while (pattern[i] && pattern[i] != ']') {
+                i++;        /* character class: drop the whole thing */
+            }
+            continue;
+        }
+        if (j + 1 < out_size) {
+            out[j++] = c;
+        }
+    }
+    out[j] = '\0';
+    return j > 0 && strcmp(out, pattern) != 0;
+}
+
 /* grep_files (added): search file contents for a plain-text pattern. */
 static esp_err_t cap_files_grep_files_execute(const char *input_json,
                                               const claw_cap_call_context_t *ctx,
@@ -1514,6 +1622,8 @@ static esp_err_t cap_files_grep_files_execute(const char *input_json,
      * before the tail of this function still echoes the pattern; copy them so
      * the echo cannot read freed memory (this produced garbled output). */
     char pattern_copy[160] = {0};
+    char literal_pattern[160] = {0};
+    bool has_literal_candidate = false;
     char filter_copy[96] = {0};
     struct stat st = {0};
     bool case_sensitive = false;
@@ -1585,7 +1695,42 @@ static esp_err_t cap_files_grep_files_execute(const char *input_json,
         return err;
     }
     if (matches == 0) {
-        snprintf(output, output_size, "(no matches for \"%s\" under %s)", pattern, resolved_path);
+        has_literal_candidate = cap_files_grep_literal_candidate(pattern,
+                                                                 literal_pattern,
+                                                                 sizeof(literal_pattern));
+        if (has_literal_candidate) {
+            size_t retry_used = 0;
+            size_t retry_matches = 0;
+            bool retry_stopped = false;
+            esp_err_t retry_err;
+
+            output[0] = '\0';
+            if (S_ISDIR(st.st_mode)) {
+                retry_err = cap_files_grep_recursive(resolved_path, literal_pattern, file_filter,
+                                                     case_sensitive, output, output_size,
+                                                     &retry_used, &retry_matches, max_results,
+                                                     &retry_stopped);
+            } else {
+                retry_err = cap_files_grep_file(resolved_path, literal_pattern, case_sensitive,
+                                                output, output_size, &retry_used, &retry_matches,
+                                                max_results, &retry_stopped);
+            }
+            if (retry_err == ESP_OK && retry_matches > 0) {
+                if (retry_used < output_size - 1) {
+                    snprintf(output + retry_used, output_size - retry_used,
+                             "[grep_files matches plain text, not regex: \"%s\" found nothing; "
+                             "the hits above are for \"%s\"]",
+                             pattern, literal_pattern);
+                }
+                return ESP_OK;
+            }
+        }
+        snprintf(output, output_size,
+                 "(no matches for \"%s\" under %s)%s",
+                 pattern, resolved_path,
+                 has_literal_candidate ?
+                 " [grep_files is plain text: \\w, \\d and \\. are literal characters, "
+                 "not regex classes]" : "");
         return ESP_OK;
     }
     if (used < output_size - 1) {
@@ -1901,10 +2046,10 @@ static const claw_cap_descriptor_t s_files_descriptors[] = {
         .id = "grep_files",
         .name = "grep_files",
         .family = "files",
-        .description = "Search file contents for plain text (no regex); returns path:line: text hits. Use | for alternatives, e.g. TIME_X|NET_Y. Locate code with this instead of reading whole files.",
+        .description = "Search file contents for plain text (no regex); returns path:line: text hits. Use | for alternatives, e.g. TIME_X|NET_Y. Backslashes and * + ? [] are literal characters here, so a regex such as display\\.\\w+ searches for exactly that text; if such a pattern finds nothing the tool retries once as plain text and labels the result. Locate code with this instead of reading whole files.",
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
-        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute file or directory path under an allowed directory\"},\"pattern\":{\"type\":\"string\",\"description\":\"Plain text to find (case-insensitive by default)\"},\"file_filter\":{\"type\":\"string\",\"description\":\"Optional substring to match against file names, e.g. .lua\"},\"case_sensitive\":{\"type\":\"boolean\",\"description\":\"Default false\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Default 100, max 200\"}},\"required\":[\"path\",\"pattern\"]}",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute file or directory path under an allowed directory\"},\"pattern\":{\"type\":\"string\",\"description\":\"Plain text to find (case-insensitive by default). | separates alternatives. No regex: \\\\w, \\\\d and \\\\. are literal characters\"},\"file_filter\":{\"type\":\"string\",\"description\":\"Optional substring to match against file names, e.g. .lua\"},\"case_sensitive\":{\"type\":\"boolean\",\"description\":\"Default false\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Default 100, max 200\"}},\"required\":[\"path\",\"pattern\"]}",
         .execute = cap_files_grep_files_execute,
     },
     {

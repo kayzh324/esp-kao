@@ -163,6 +163,8 @@ trim_count = refuse_count = 0
 `window_bytes=655360`、`est_budget_bytes=1048576`、`block_have_bytes=20971520`。
 
 未动：`TOOL_RESULT_MAX_BYTES` 48 KB、`RUNTIME_ARG_MAX_BYTES` 600、`PREAMBLE` 64 KB、
-`CAP_FILES_*` 128/128/256 KB —— 先观察第一轮任务再定。另发现 `SERIALIZE_REFUSE_BYTES` 与
-`SERIALIZE_EST_BUDGET_BYTES` 两个档位宏**无人使用**（闸门自己按 W+trigger+preamble 算），属死宏，
-待清理。
+`CAP_FILES_*` 128/128/256 KB —— 先观察第一轮任务再定。
+
+已清理（同日）：`SERIALIZE_REFUSE_BYTES`、`SERIALIZE_EST_BUDGET_BYTES`、`CLAW_TIER_NAME`
+三个档位宏无人使用（闸门自己按 W+trigger+preamble 算），已从三档删除；重新扫描确认
+`CLAW_TIER_*` 无死宏，且清理后 `get_system_info` 的数值不变（证明它们确实没参与运行）。

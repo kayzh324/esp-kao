@@ -34,8 +34,6 @@
 
 #if defined(CONFIG_CLAW_TIER_ESP32P4)
 
-#define CLAW_TIER_NAME "esp32p4"
-
 /* per-request budgets ---------------------------------------------------- */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (640 * 1024)
 /* Dynamic window ceiling: the real per-request context cap (the window is derived
@@ -60,14 +58,9 @@
 #define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (96 * 1024)
 
-/* Serialize guard (added): total budget derived from the parts it bounds.
- * See the S3 block for the rationale; preamble is larger here because the
- * per-tier tool surface and system prompt are assumed to grow with it. */
+/* Serialize guard preamble. Larger than S3's because the per-tier tool surface and
+ * system prompt are assumed to grow with it (see the S3 block for the rule). */
 #define CLAW_TIER_SERIALIZE_PREAMBLE_BYTES       (64 * 1024)
-#define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES \
-    (((CLAW_TIER_RUNTIME_BUDGET_BYTES + CLAW_TIER_PROJECT_TRIGGER_CHARS + \
-       CLAW_TIER_SERIALIZE_PREAMBLE_BYTES) * 9) / 8)
-#define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (640 * 1024)
 
 /* session projection / summary ------------------------------------------ */
 #define CLAW_TIER_PROJECT_TRIGGER_CHARS          (320 * 1024)
@@ -105,8 +98,6 @@
 
 #elif defined(CONFIG_CLAW_TIER_ESP32S31)
 
-#define CLAW_TIER_NAME "esp32s31"
-
 /* per-request budgets ---------------------------------------------------- */
 /* Placeholder: copied from the P4 tier. Re-measure on real hardware. */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (256 * 1024)
@@ -129,14 +120,9 @@
 #define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (96 * 1024)
 
-/* Serialize guard (added): total budget derived from the parts it bounds.
- * See the S3 block for the rationale; preamble is larger here because the
- * per-tier tool surface and system prompt are assumed to grow with it. */
+/* Serialize guard preamble. Larger than S3's because the per-tier tool surface and
+ * system prompt are assumed to grow with it (see the S3 block for the rule). */
 #define CLAW_TIER_SERIALIZE_PREAMBLE_BYTES       (64 * 1024)
-#define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES \
-    (((CLAW_TIER_RUNTIME_BUDGET_BYTES + CLAW_TIER_PROJECT_TRIGGER_CHARS + \
-       CLAW_TIER_SERIALIZE_PREAMBLE_BYTES) * 9) / 8)
-#define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (640 * 1024)
 
 /* session projection / summary ------------------------------------------ */
 #define CLAW_TIER_PROJECT_TRIGGER_CHARS          (160 * 1024)
@@ -174,8 +160,6 @@
 
 #else /* CONFIG_CLAW_TIER_ESP32S3, or no sdkconfig in scope: the S3 floor */
 
-#define CLAW_TIER_NAME "esp32s3"
-
 /* per-request budgets ---------------------------------------------------- */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (48 * 1024)
 /* Same value the window module used as a flat constant before this moved here. */
@@ -198,22 +182,13 @@
 #define CLAW_TIER_FILE_GUIDE_TEXT_BYTES          (CLAW_TIER_RUNTIME_BUDGET_BYTES / 8)
 #define CLAW_TIER_CAP_CORE_OUTPUT_SIZE           (32 * 1024)
 
-/* Serialize guard (added). The total budget must be at least the sum of the
- * parts it bounds, or it becomes the binding constraint and fires before any
- * per-part policy can: the request body is replayed history (projection
- * trigger) + in-turn runtime + the fixed preamble (system prompt and tool
- * schemas; measured ~30 KB on S3). The old fixed 96 KB was below that sum, so
- * every ordinary multi-round turn tripped it and its one-pass eviction blanked
- * the whole turn's evidence. Defined here but references the projection
- * constants below: macros expand at use time, not at definition time. The *9/8
- * matches the estimate's JSON-scaffolding allowance. */
+/* Serialize guard (added). The guard's budget is the sum of the parts it bounds -
+ * replayed history (projection trigger) + in-turn runtime (W) + this fixed
+ * preamble (system prompt and tool schemas; measured ~30 KB on S3) - so it can
+ * never become the binding constraint and fire before the per-part policies do.
+ * The old fixed 96 KB total was below that sum: every ordinary multi-round turn
+ * tripped it and its one-pass eviction blanked the whole turn's evidence. */
 #define CLAW_TIER_SERIALIZE_PREAMBLE_BYTES       (32 * 1024)
-#define CLAW_TIER_SERIALIZE_EST_BUDGET_BYTES \
-    (((CLAW_TIER_RUNTIME_BUDGET_BYTES + CLAW_TIER_PROJECT_TRIGGER_CHARS + \
-       CLAW_TIER_SERIALIZE_PREAMBLE_BYTES) * 9) / 8)
-/* Hard cap AFTER cost-ordered trimming. Only reachable when the protected
- * newest rounds alone exceed it; normal requests stay below the trigger. */
-#define CLAW_TIER_SERIALIZE_REFUSE_BYTES         (192 * 1024)
 
 /* session projection / summary ------------------------------------------ */
 #define CLAW_TIER_PROJECT_TRIGGER_CHARS          (48 * 1024)

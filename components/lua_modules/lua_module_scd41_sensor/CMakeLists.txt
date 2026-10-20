@@ -9,6 +9,8 @@ set(scd41_requires
 set(scd41_priv_requires
     espressif__esp_board_manager
     esp_driver_i2c
+    lua_driver_i2c
+    claw_hw_registry
 )
 
 idf_component_register(

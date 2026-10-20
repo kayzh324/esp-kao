@@ -18,6 +18,12 @@ if(CONFIG_LUA_MODULE_IMU_CHIP_ICM42670)
     )
 endif()
 
+if(CONFIG_LUA_MODULE_IMU_CHIP_QMI8658)
+    list(APPEND imu_srcs
+        "src/qmi8658/qmi8658_backend.c"
+    )
+endif()
+
 if(CONFIG_LUA_MODULE_IMU_CHIP_MPU6050)
     list(APPEND imu_srcs
         "src/mpu6050/mpu6050.c"
@@ -25,12 +31,6 @@ if(CONFIG_LUA_MODULE_IMU_CHIP_MPU6050)
     )
     list(APPEND imu_include_dirs
         "src/mpu6050"
-    )
-endif()
-
-if(CONFIG_LUA_MODULE_IMU_CHIP_QMI8658)
-    list(APPEND imu_srcs
-        "src/qmi8658/qmi8658_backend.c"
     )
 endif()
 
@@ -42,8 +42,8 @@ idf_component_register(
     REQUIRES
         cap_lua
         esp_board_manager
-    PRIV_REQUIRES
-        espressif__i2c_bus
+        esp_driver_i2c
+        lua_driver_i2c
 )
 
 if(CONFIG_LUA_MODULE_IMU_CHIP_BMI270)

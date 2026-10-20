@@ -12,10 +12,11 @@
 #include <string.h>
 
 #include "cap_lua.h"
+#include "cap_lua_hw.h"
 #include "driver/i2c_master.h"
 #include "esp_board_device.h"
 #include "esp_board_manager.h"
-#include "esp_board_periph.h"
+#include "lua_driver_i2c.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -47,12 +48,13 @@ typedef struct {
 typedef struct {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t dev;
+    lua_driver_i2c_bus_handle_t bus_owner;
+    cap_lua_hw_lease_t lease;
     uint8_t i2c_addr;
     uint32_t timeout_ms;
     uint32_t ready_timeout_ms;
     bool initialized;
     bool measurement_started;
-    bool peripheral_ref_held;
     /* Latest successfully read sample, shared by read()/read_co2()/... so that
      * sub-5 s reads return this instead of failing a too-early I2C read. */
     bool has_sample;
@@ -384,16 +386,20 @@ static void lua_module_scd41_release(lua_module_scd41_handle_t *handle)
         i2c_master_bus_rm_device(handle->dev);
         handle->dev = NULL;
     }
-    if (handle->peripheral_ref_held) {
-        /* The board manager owns the shared master bus lifecycle. */
-        esp_board_periph_unref_handle(handle->peripheral_name);
-        handle->peripheral_ref_held = false;
+    if (handle->lease.id) {
+        (void)cap_lua_hw_release(&handle->lease);
+        handle->lease.id = CLAW_HW_CLAIM_INVALID;
+    }
+    if (handle->bus_owner) {
+        lua_driver_i2c_unref_bus(handle->bus_owner);
+        handle->bus_owner = NULL;
     }
     handle->bus = NULL;
     handle->initialized = false;
 }
 
-static esp_err_t lua_module_scd41_create_handle(const lua_scd41_resolved_cfg_t *cfg,
+static esp_err_t lua_module_scd41_create_handle(lua_State *L,
+                                               const lua_scd41_resolved_cfg_t *cfg,
                                                lua_module_scd41_handle_t **out_handle)
 {
     lua_module_scd41_handle_t *handle = calloc(1, sizeof(lua_module_scd41_handle_t));
@@ -406,13 +412,25 @@ static esp_err_t lua_module_scd41_create_handle(const lua_scd41_resolved_cfg_t *
     handle->timeout_ms = cfg->timeout_ms;
     handle->ready_timeout_ms = cfg->ready_timeout_ms;
 
-    esp_err_t err = esp_board_periph_ref_handle(cfg->peripheral_name, (void **)&handle->bus);
+    int port = -1;
+    handle->bus = lua_driver_i2c_ref_bus(L, -1, &port, &handle->bus_owner);
+    if (handle->bus == NULL) {
+        ESP_LOGE(TAG, "Failed to reference the board I2C bus");
+        free(handle);
+        return ESP_ERR_INVALID_STATE;
+    }
+    char key[CLAW_HW_KEY_SIZE];
+    const char *keys[] = {
+        claw_hw_key_i2c_addr(key, sizeof(key), port, handle->i2c_addr),
+    };
+    esp_err_t err = cap_lua_hw_claim(L, &handle->lease, "lua/scd41", keys, 1);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to reference I2C peripheral '%s': %s", cfg->peripheral_name, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to claim SCD41 address 0x%02x on i2c%d: %s",
+                 handle->i2c_addr, port, esp_err_to_name(err));
+        lua_module_scd41_release(handle);
         free(handle);
         return err;
     }
-    handle->peripheral_ref_held = true;
 
     const i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -664,7 +682,7 @@ static int lua_module_scd41_new(lua_State *L)
     }
 
     lua_module_scd41_handle_t *handle = NULL;
-    err = lua_module_scd41_create_handle(&cfg, &handle);
+    err = lua_module_scd41_create_handle(L, &cfg, &handle);
     if (err != ESP_OK || handle == NULL) {
         return luaL_error(L, "scd41_sensor.new failed: %s",
                           esp_err_to_name(err != ESP_OK ? err : ESP_FAIL));

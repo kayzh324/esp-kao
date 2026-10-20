@@ -15,7 +15,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "i2c_bus.h"
+#include "driver/i2c_master.h"
 
 #include "lua_module_imu_backend.h"
 
@@ -61,7 +61,8 @@ static esp_err_t qmi8658_write_reg(lua_imu_backend_ctx_t *ctx, uint8_t reg, uint
     if (ctx->i2c_dev_handle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    return i2c_bus_write_bytes(ctx->i2c_dev_handle, reg, 1, &value);
+    const uint8_t buf[2] = { reg, value };
+    return i2c_master_transmit(ctx->i2c_dev_handle, buf, sizeof(buf), 1000);
 }
 
 static esp_err_t qmi8658_read_regs(lua_imu_backend_ctx_t *ctx, uint8_t reg, uint8_t *data, size_t len)
@@ -69,7 +70,7 @@ static esp_err_t qmi8658_read_regs(lua_imu_backend_ctx_t *ctx, uint8_t reg, uint
     if (ctx->i2c_dev_handle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    return i2c_bus_read_bytes(ctx->i2c_dev_handle, reg, len, data);
+    return i2c_master_transmit_receive(ctx->i2c_dev_handle, &reg, 1, data, len, 1000);
 }
 
 static int16_t qmi8658_le16(const uint8_t *p)
@@ -176,7 +177,7 @@ static int qmi8658_backend_sdo_level_for_addr(uint8_t i2c_addr)
     return (i2c_addr == QMI8658_ADDR_HIGH) ? 1 : 0;
 }
 
-const lua_imu_backend_t lua_imu_backend = {
+const lua_imu_backend_t lua_imu_backend_qmi8658 = {
     .chip_name = "qmi8658",
     .state_size = sizeof(qmi8658_state_t),
     .probe = qmi8658_backend_probe,

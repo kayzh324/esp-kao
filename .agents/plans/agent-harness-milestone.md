@@ -1,5 +1,8 @@
 # esp-claw agent 优化里程碑 M1
 
+> **已被 [`agent-harness-milestone-m2.md`](./agent-harness-milestone-m2.md)（`22616fa4`）取代为"先读"文档。**
+> 本文件的 §0 判据与 §2 时序节点仍是设计与判断依据，内容未变；M1 之后的变化、验证与未决项见 M2。
+
 - 日期：2026-10-19
 - 分支：`feat/agent-rework`（本地，未推）
 - **里程碑提交：`b1897259`** —— 后续优化以该版本为基线，不必复盘之前的优化与 debug 过程

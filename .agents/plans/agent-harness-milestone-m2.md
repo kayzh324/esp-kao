@@ -100,3 +100,44 @@
 - 同时会把 **C7 两条**（无 PSRAM 回落、内部 flash 写入）从"理论缺陷"变成"必须面对"——
   P4 模组的 PSRAM/存储形态与 S3 板不同，先确认硬件形态再决定是否先修 C7。
 - 纪律：板级适配只改板目录文件；项目代码改动加 `(added)` 注释。
+
+---
+
+## 7. P4 首次上电基线（2026-10-20，板 `jc_esp32_p4_m3_dev`）
+
+固件 `v0.1.0-159-g357f6702`（含窗口上限按档位提供、板级描述、peripheral 地址渲染）。
+烧录方式：只写 bootloader / 分区表 / app / system，**不碰 NVS 与 storage**，因此 WiFi 与
+LLM 配置原样保留（NVS 在 0xa000，新旧分区布局一致）。
+
+### 硬件
+
+| 项 | 值 |
+|---|---|
+| 芯片 | ESP32-P4 eco2, rev v1.3 |
+| Flash | 16 MB（Boya，走 generic driver） |
+| PSRAM | 32 MB hex @200 MHz |
+| 内部 RAM | total 577 KB / free 259 KB / **largest free block 131 KB** |
+| PSRAM 可用 | total 29.8 MB / free 21.4 MB / **largest free block 20.9 MB** |
+| 存储 | SDMMC 4-bit，`/sdcard`，卡 29.7 GB |
+| 显示 | JD9365 DSI 初始化成功；**swap_xy 不支持**（启动警告属预期） |
+| 音频 | ES8311（I2C 0x30）双向初始化成功 |
+| 网络 | WiFi 正常（192.168.31.135）；桌面自检 7/7 online |
+
+### context 基线（`get_system_info {"sections":["context"]}`）
+
+```
+window_bytes      = 262144        (W，被档位上限夹住)
+est_budget_bytes  = 491520        (W + 投影触发 160K + 前导 64K)
+block_have_bytes  = 20971520      (20 MB)
+trim_count = refuse_count = 0
+```
+
+### 由此得到的三条待定
+
+1. **W 的约束已经不是内存**：硬件能一次给出 20 MB 连续块，W 卡在 256 KB 完全是档位上限。
+   但放大 W 的代价是每轮 token 与模型上下文长度——要用真实任务的总成本来判，不能凭内存余量加。
+2. **P4 档的 est_budget（480 KB）可能先撞模型上下文，而不是 RAM**：S3 档是 336 KB，已接近
+   128K-token 量级。第一次任务要盯 `last_body_bytes` 与后端是否报上下文超限；若超限，应先降
+   `PROJECT_TRIGGER_CHARS`/`PREAMBLE`，而不是降 W。
+3. C7 的两条在这块板上**不会咬人**：DATA 在 SD（不触发内部 flash 写入断言），PSRAM 充足
+   （不触发 spawn 准入拒绝）。C7 留给真正的弱板。

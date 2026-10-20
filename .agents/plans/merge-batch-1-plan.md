@@ -35,14 +35,19 @@
 
 1. **NVS 配置被清空**：上游新增 `cfg_ver`，旧 NVS 没有该键，首次启动执行了
    `erase_all`，WiFi 与 LLM 配置丢失。已加兼容逻辑：缺 `cfg_ver` 但存在 `wifi_ssid`
-   时直接补写版本、不再清空。已清掉的配置需要重新录入。
+   时直接补写版本、不再清空。重新配置后多次重启/烧录已验证配置保留。
 2. **启动器为空**：旧启动器依赖技能 `execution` 元数据，上游已移除该字段。
    当前编译为空启动器（home/任务页正常），第 4 批切到 `app_registry`。
 3. **`app_registry` 启动告警**：`/sdcard/apps/*` 缺 `launcher.json`，属预期，
    第 4 批补清单。
-4. **event router 启动规则失败**：`startup_refresh_ip_info` 的
-   `lua_run_script_async` 返回 `ESP_ERR_INVALID_STATE`，待查（可能与启动时序有关）。
+4. **`startup_refresh_ip_info` 失败（已修）**：所有应用入口都叫 `main.lua`，
+   `cap_lua` 用文件名当默认 job 名，第二个应用必然重名冲突。已改为入口为
+   `main.lua` 时用所属目录名作 job 名（`5d68f194`），实测 `name=ip_info` 启动成功。
 5. **audio_hub 启动失败**：板级无 codec（UAC 未插入），仅打错误日志，不影响启动。
+6. **`session history idx ... errno=2`**：新会话首次访问时的索引文件缺失日志，
+   属上游噪声日志，功能正常，暂不处理。
+7. **`ip_info` 时间戳为 1970**：该 app 在 SNTP 完成前被 startup 规则触发。
+   属 app 侧时序问题，可在时间同步后重抓，或改为监听 time_sync 事件。
 
 ## 0. 本阶段的硬约束
 

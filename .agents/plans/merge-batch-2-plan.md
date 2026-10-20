@@ -2,7 +2,17 @@
 
 - 日期：2026-10-20
 - 前置：批次 1（`a2299b95`）已合并、构建通过、真机启动正常
-- 状态：待批次 1 验收（联网 + agent 实跑）后开工
+- 状态：**已完成**（`e716c823`，2026-10-21 真机验证）
+
+## 执行结果
+
+| 项 | 结果 |
+|---|---|
+| 2.1 通知 | `post_message` + receipt 生效；日志 `notified parent run=5 dispatcher=new_run`；无目标通道时不再请求 outbound publish |
+| 2.2 授权 | 独立 `cap_agent_mgr_llm_allow` 已注册；recon 子 agent 实测「没有 write_file」 |
+| 2.3 历史 API | 分页语义写入 `claw_memory.h`；投影摘要作为普通记录追加，读 API 天然包含 |
+| 构建 | `idf.py build` 通过 |
+| 回归 | 子 agent 报告落盘、通知、投影均正常 |
 
 ## 1. 本批目标
 

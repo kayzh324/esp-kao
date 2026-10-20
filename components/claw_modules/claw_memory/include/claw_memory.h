@@ -90,7 +90,13 @@ esp_err_t claw_memory_delete_session_history(const char *session_id,
  * API lets product UIs render history without depending on the memory
  * component's storage layout.
  */
-/* Read visible messages by stable visible ordinal; before=0 selects the tail. */
+/* Read visible messages by stable visible ordinal; before=0 selects the tail.
+ *
+ * The page is taken over the stored record stream. Session projection (added)
+ * appends its structured summary as a normal summary record, so pages include
+ * the summary and the stream stays append-only. `before`/`limit` count stored
+ * records, not "messages after compaction"; front ends should treat the page as
+ * the authoritative replay view. */
 esp_err_t claw_memory_read_session_messages(const char *session_id, size_t before, size_t limit, cJSON **out);
 esp_err_t claw_memory_load_session_history_json(const char *session_id,
                                                 char **out_json);

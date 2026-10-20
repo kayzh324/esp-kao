@@ -1,11 +1,6 @@
 version: 1.0.0
 # Devices Configuration
-#
-# Display (ILI9341)  : SPI2, CS=10, DC=8, RST=7   @ 40 MHz
-# Touch (XPT2046)    : SPI2, CS=9,  IRQ=5         @ 1 MHz  (2.5 MHz is the chip limit)
-# SD card (SPI mode) : SPI3, CS=40， SCK=36, MOSI=35, MISO=37               
-# magnetometer_sensor(bmm150) I2C
-# imu_sensor(bmi270) I2C
+
 devices:
 
 

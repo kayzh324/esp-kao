@@ -56,21 +56,34 @@ typedef struct {
     uint8_t status;
 } qmi8658_state_t;
 
+/* Board mode (added): the board setup owns a configured i2c_master_dev_handle_t
+ * and hands it over as ctx->sensor, because borrowed sensors are already
+ * initialised. External mode uses ctx->i2c_dev_handle instead. */
+static i2c_master_dev_handle_t qmi8658_dev(lua_imu_backend_ctx_t *ctx)
+{
+    if (ctx->i2c_dev_handle) {
+        return ctx->i2c_dev_handle;
+    }
+    return (i2c_master_dev_handle_t)ctx->sensor;
+}
+
 static esp_err_t qmi8658_write_reg(lua_imu_backend_ctx_t *ctx, uint8_t reg, uint8_t value)
 {
-    if (ctx->i2c_dev_handle == NULL) {
+    i2c_master_dev_handle_t dev = qmi8658_dev(ctx);
+    if (dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     const uint8_t buf[2] = { reg, value };
-    return i2c_master_transmit(ctx->i2c_dev_handle, buf, sizeof(buf), 1000);
+    return i2c_master_transmit(dev, buf, sizeof(buf), 1000);
 }
 
 static esp_err_t qmi8658_read_regs(lua_imu_backend_ctx_t *ctx, uint8_t reg, uint8_t *data, size_t len)
 {
-    if (ctx->i2c_dev_handle == NULL) {
+    i2c_master_dev_handle_t dev = qmi8658_dev(ctx);
+    if (dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    return i2c_master_transmit_receive(ctx->i2c_dev_handle, &reg, 1, data, len, 1000);
+    return i2c_master_transmit_receive(dev, &reg, 1, data, len, 1000);
 }
 
 static int16_t qmi8658_le16(const uint8_t *p)

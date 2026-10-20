@@ -16,7 +16,7 @@
 #include "driver/i2c_master.h"
 #include "esp_board_device.h"
 #include "esp_board_manager.h"
-#include "lua_driver_i2c.h"
+#include "esp_board_periph.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -48,8 +48,8 @@ typedef struct {
 typedef struct {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t dev;
-    lua_driver_i2c_bus_handle_t bus_owner;
     cap_lua_hw_lease_t lease;
+    bool peripheral_ref_held;
     uint8_t i2c_addr;
     uint32_t timeout_ms;
     uint32_t ready_timeout_ms;
@@ -390,15 +390,17 @@ static void lua_module_scd41_release(lua_module_scd41_handle_t *handle)
         (void)cap_lua_hw_release(&handle->lease);
         handle->lease.id = CLAW_HW_CLAIM_INVALID;
     }
-    if (handle->bus_owner) {
-        lua_driver_i2c_unref_bus(handle->bus_owner);
-        handle->bus_owner = NULL;
+    if (handle->peripheral_ref_held) {
+        /* The board manager owns the shared master bus lifecycle. */
+        esp_board_periph_unref_handle(handle->peripheral_name);
+        handle->peripheral_ref_held = false;
     }
     handle->bus = NULL;
     handle->initialized = false;
 }
 
 static esp_err_t lua_module_scd41_create_handle(lua_State *L,
+                                               const char *device_name,
                                                const lua_scd41_resolved_cfg_t *cfg,
                                                lua_module_scd41_handle_t **out_handle)
 {
@@ -412,21 +414,41 @@ static esp_err_t lua_module_scd41_create_handle(lua_State *L,
     handle->timeout_ms = cfg->timeout_ms;
     handle->ready_timeout_ms = cfg->ready_timeout_ms;
 
-    int port = -1;
-    handle->bus = lua_driver_i2c_ref_bus(L, -1, &port, &handle->bus_owner);
-    if (handle->bus == NULL) {
-        ESP_LOGE(TAG, "Failed to reference the board I2C bus");
+    esp_err_t err = esp_board_periph_ref_handle(cfg->peripheral_name, (void **)&handle->bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to reference I2C peripheral '%s': %s",
+                 cfg->peripheral_name, esp_err_to_name(err));
         free(handle);
-        return ESP_ERR_INVALID_STATE;
+        return err;
     }
+    handle->peripheral_ref_held = true;
+
+    /* Arbitration: board sensors claim their device, matching the upstream
+     * board-sensor pattern, so a second Lua handle is rejected. */
     char key[CLAW_HW_KEY_SIZE];
     const char *keys[] = {
-        claw_hw_key_i2c_addr(key, sizeof(key), port, handle->i2c_addr),
+        claw_hw_key_device(key, sizeof(key), device_name),
     };
-    esp_err_t err = cap_lua_hw_claim(L, &handle->lease, "lua/scd41", keys, 1);
+    /* (added) The board-resource generator only emits entries for devices it
+     * recognises, so this custom sensor has no pre-registered device key.
+     * Register it once; later opens get ESP_ERR_INVALID_STATE from register and
+     * then claim the existing key. */
+    claw_hw_registry_handle_t registry = cap_lua_hw_get_registry(L);
+    if (registry) {
+        const claw_hw_resource_config_t resource = {
+            .resource = keys[0],
+            .policy = CLAW_HW_EXCLUSIVE,
+        };
+        esp_err_t reg_err = claw_hw_registry_register(registry, &resource, 1);
+        if (reg_err != ESP_OK && reg_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Register SCD41 resource '%s' failed: %s",
+                     keys[0], esp_err_to_name(reg_err));
+        }
+    }
+    err = cap_lua_hw_claim(L, &handle->lease, "lua/scd41", keys, 1);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to claim SCD41 address 0x%02x on i2c%d: %s",
-                 handle->i2c_addr, port, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to claim SCD41 device '%s': %s",
+                 device_name, esp_err_to_name(err));
         lua_module_scd41_release(handle);
         free(handle);
         return err;
@@ -682,7 +704,7 @@ static int lua_module_scd41_new(lua_State *L)
     }
 
     lua_module_scd41_handle_t *handle = NULL;
-    err = lua_module_scd41_create_handle(L, &cfg, &handle);
+    err = lua_module_scd41_create_handle(L, device_name, &cfg, &handle);
     if (err != ESP_OK || handle == NULL) {
         return luaL_error(L, "scd41_sensor.new failed: %s",
                           esp_err_to_name(err != ESP_OK ? err : ESP_FAIL));

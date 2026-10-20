@@ -87,46 +87,8 @@ typedef enum {
     CLAW_CAP_AUTH_NOT_LLM_CALLABLE,
     CLAW_CAP_AUTH_ROOT_ONLY,
     CLAW_CAP_AUTH_GROUP_NOT_VISIBLE,
-    /* sub-agent types (added): a type is a capability boundary, not just a prompt. */
-    CLAW_CAP_AUTH_AGENT_TYPE_DENIED,
     CLAW_CAP_AUTH_POLICY_DENIED,
 } claw_cap_auth_status_t;
-
-/* sub-agent types (added): per-type tool boundaries. `recon` investigates only;
- * `verify` may run things but must not modify files (otherwise it could "fix" the
- * thing under test until it passes). `build` (and the default `subagent`) are
- * unrestricted apart from the existing root-only rule. */
-static bool claw_cap_tool_denied_for_agent_type(const char *agent_type, const char *tool_id)
-{
-    static const char *const recon_denied[] = {
-        "write_file", "edit_file", "delete_file", "copy_file", "move_file", "restore_file",
-        "lua_run_script", "lua_run_script_async", "lua_stop_async_job",
-    };
-    static const char *const verify_denied[] = {
-        "write_file", "edit_file", "delete_file", "copy_file", "move_file", "restore_file",
-    };
-    const char *const *denied = NULL;
-    size_t denied_count = 0;
-
-    if (!agent_type || !tool_id) {
-        return false;
-    }
-    if (strcmp(agent_type, "recon") == 0) {
-        denied = recon_denied;
-        denied_count = sizeof(recon_denied) / sizeof(recon_denied[0]);
-    } else if (strcmp(agent_type, "verify") == 0) {
-        denied = verify_denied;
-        denied_count = sizeof(verify_denied) / sizeof(verify_denied[0]);
-    } else {
-        return false;
-    }
-    for (size_t i = 0; i < denied_count; i++) {
-        if (strcmp(denied[i], tool_id) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
 
 static claw_cap_auth_status_t claw_cap_authorize_llm_tool_locked(
     const claw_cap_descriptor_slot_t *slot,
@@ -184,8 +146,6 @@ static const char *claw_cap_auth_status_to_string(claw_cap_auth_status_t status)
         return "root_agent_only";
     case CLAW_CAP_AUTH_GROUP_NOT_VISIBLE:
         return "group_not_visible";
-    case CLAW_CAP_AUTH_AGENT_TYPE_DENIED:
-        return "agent_type_denied";
     case CLAW_CAP_AUTH_POLICY_DENIED:
         return "policy_denied";
     default:
@@ -747,11 +707,6 @@ static claw_cap_auth_status_t claw_cap_authorize_llm_tool_locked(
     if (caller == CLAW_CAP_CALLER_SUB_AGENT &&
             (slot->descriptor.cap_flags & CLAW_CAP_FLAG_ROOT_AGENT_ONLY)) {
         return CLAW_CAP_AUTH_ROOT_ONLY;
-    }
-    /* Applies to both the tool list the model sees and the actual call. */
-    if (caller == CLAW_CAP_CALLER_SUB_AGENT && ctx &&
-            claw_cap_tool_denied_for_agent_type(ctx->agent_type, slot->descriptor.id)) {
-        return CLAW_CAP_AUTH_AGENT_TYPE_DENIED;
     }
     if (!claw_cap_group_is_llm_visible_locked(slot->group_slot_index, ctx)) {
         return CLAW_CAP_AUTH_GROUP_NOT_VISIBLE;

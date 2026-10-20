@@ -370,13 +370,6 @@ esp_err_t claw_core_post_message(claw_core_handle_t core,
                                           out_receipt);
 }
 
-esp_err_t claw_core_submit(claw_core_handle_t core,
-                           const claw_core_request_t *request,
-                           uint32_t timeout_ms)
-{
-    return claw_core_start_run(core, request, timeout_ms);
-}
-
 esp_err_t claw_core_receive(claw_core_handle_t core,
                             claw_core_response_t *response,
                             uint32_t timeout_ms)

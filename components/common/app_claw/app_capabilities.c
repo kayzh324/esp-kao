@@ -907,6 +907,9 @@ esp_err_t app_capabilities_init(const app_claw_config_t *config,
     }
 
     ESP_RETURN_ON_ERROR(claw_cap_init(), TAG, "Failed to init claw_cap");
+    /* Subagent type boundaries live in the agent capability, not in claw_cap. */
+    ESP_RETURN_ON_ERROR(claw_cap_set_llm_authorizer(cap_agent_mgr_llm_allow, NULL),
+                        TAG, "Failed to register subagent type authorizer");
     ESP_GOTO_ON_ERROR(app_cap_register_llm_config_command(),
                       cleanup, TAG, "Failed to register LLM config command");
 

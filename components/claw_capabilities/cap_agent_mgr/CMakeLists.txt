@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/cap_agent_mgr.c"
+        "src/cap_agent_policy.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

@@ -886,9 +886,13 @@ static bool claw_agent_mgr_deliver_to_parent(const claw_agent_mgr_parent_route_t
 
     request.request_id = request_id;
     /* The upstream ingress delivers to the active run's inbox, so an explicit
-     * interrupt flag is no longer needed (it was removed upstream). */
-    request.flags = CLAW_CORE_REQUEST_FLAG_PUBLISH_OUT_MESSAGE |
-                    CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE;
+     * interrupt flag is no longer needed (it was removed upstream). Only ask for
+     * an outbound event when the parent actually has an external channel; a
+     * console/agent-internal notification has no target to publish to. */
+    request.flags = CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE;
+    if (route->parent_target_channel[0] && route->parent_target_chat_id[0]) {
+        request.flags |= CLAW_CORE_REQUEST_FLAG_PUBLISH_OUT_MESSAGE;
+    }
     request.session_id = route->parent_session_id;
     request.user_text = text;
     request.source_channel = route->parent_source_channel;
@@ -898,8 +902,15 @@ static bool claw_agent_mgr_deliver_to_parent(const claw_agent_mgr_parent_route_t
     request.target_chat_id = route->parent_target_chat_id;
 
     for (int attempt = 0; attempt < CLAW_AGENT_MGR_NOTIFY_ATTEMPTS; attempt++) {
-        err = claw_core_submit(root_core, &request, CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS);
+        claw_core_message_receipt_t receipt = {0};
+        err = claw_core_post_message(root_core, &request,
+                                     CLAW_AGENT_MGR_NOTIFY_SUBMIT_TIMEOUT_MS,
+                                     &receipt);
         if (err == ESP_OK) {
+            ESP_LOGI(TAG, "notified parent run=%" PRIu32 " dispatcher=%s",
+                     receipt.run_id,
+                     receipt.disposition == CLAW_CORE_MESSAGE_APPENDED_TO_RUN ?
+                     "inbox" : "new_run");
             return true;
         }
         ESP_LOGW(TAG, "notify parent attempt %d/%d failed: %s",

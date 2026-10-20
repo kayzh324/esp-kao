@@ -254,12 +254,6 @@ esp_err_t claw_core_post_message(claw_core_handle_t core,
                                  claw_core_message_receipt_t *out_receipt);
 /* Returns idle, queued or running; includes requests not yet picked by the worker. */
 const char *claw_core_session_state(claw_core_handle_t core, const char *session_id);
-
-/* Compatibility (added): our callers still submit an independent run. Kept as a
- * thin alias of claw_core_start_run() until they move to post_message(). */
-esp_err_t claw_core_submit(claw_core_handle_t core,
-                           const claw_core_request_t *request,
-                           uint32_t timeout_ms);
 esp_err_t claw_core_cancel_request(claw_core_handle_t core, uint32_t request_id);
 claw_core_agent_loop_phase_t claw_core_get_agent_loop_phase(claw_core_handle_t core);
 esp_err_t claw_core_receive(claw_core_handle_t core,

@@ -188,18 +188,30 @@ def load_devices(metadata: dict[str, Any],
         if not isinstance(config, dict):
             config = {}
 
+        entry = authored.get(name, {})
+        # Boards often put the bus address on the peripheral ENTRY in the authored
+        # file (e.g. "- name: i2c_master / address: 0x30"), while bmgr's metadata
+        # keeps only the peripheral name. Index the authored entries by name so their
+        # address/frequency can be rendered too.
+        authored_peripherals = {
+            item['name']: item
+            for item in (entry.get('peripherals') or [])
+            if isinstance(item, dict) and isinstance(item.get('name'), str)
+        }
+
         io_lines = format_io_list(collect_io_entries(config.get('io', {})))
         peripherals: list[dict[str, Any]] = []
         for peripheral_name in config.get('peripherals', []) or []:
             peripheral_config = raw_peripherals.get(peripheral_name, {})
+            authored_item = authored_peripherals.get(str(peripheral_name), {})
             peripherals.append({
                 'name': str(peripheral_name),
                 'io_lines': format_io_list(
                     collect_io_entries(peripheral_config.get('io', {}) if isinstance(peripheral_config, dict) else {})
                 ),
+                'config_lines': format_config_lines(authored_item, prefix=f'{peripheral_name}.'),
             })
 
-        entry = authored.get(name, {})
         chip = entry.get('chip')
         devices.append({
             'name': name,
@@ -207,7 +219,7 @@ def load_devices(metadata: dict[str, Any],
             'chip': chip if isinstance(chip, str) and chip not in ('', 'none') else '',
             # Bus addresses and any config-declared pin (touch CS, SD CS) come from the
             # authored config; the metadata io map covers the shared bus pins.
-            'config_lines': format_config_lines(entry),
+            'config_lines': format_config_lines(entry.get('config', {})),
             'io_lines': io_lines,
             'peripherals': peripherals,
         })
@@ -237,14 +249,16 @@ def format_config_value(key: str, value: Any) -> str:
     return str(value)
 
 
-def format_config_lines(authored: dict[str, Any]) -> list[str]:
+def format_config_lines(node: dict[str, Any], prefix: str = '') -> list[str]:
+    """Render curated facts from a device config block or a peripheral entry."""
     lines: list[str] = []
-    for dotted, value in flatten_scalars(authored.get('config', {})):
+    for dotted, value in flatten_scalars(node):
         key = dotted.split('.')[-1]
+        label = f'{prefix}{key}'
         if key in CONFIG_VALUE_KEYS:
-            lines.append(f'- `{key}` -> `{format_config_value(key, value)}`')
+            lines.append(f'- `{label}` -> `{format_config_value(key, value)}`')
         elif key.endswith('_gpio_num') and type(value) is int and value >= 0:
-            lines.append(f'- `{key[:-len("_gpio_num")]}` -> `GPIO{value}`')
+            lines.append(f'- `{label[:-len("_gpio_num")]}` -> `GPIO{value}`')
     return list(dict.fromkeys(lines))
 
 
@@ -304,7 +318,10 @@ def render_markdown(metadata: dict[str, Any],
         lines.extend(['', f"### {device['name']}"])
         if device.get('chip'):
             lines.append(f"- Chip: `{device['chip']}`")
-        for config_line in device.get('config_lines', []):
+        config_lines = list(device.get('config_lines', []))
+        for peripheral in device['peripherals']:
+            config_lines.extend(peripheral.get('config_lines', []))
+        for config_line in dict.fromkeys(config_lines):
             lines.append(config_line)
 
         io_lines = list(device['io_lines'])

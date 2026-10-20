@@ -38,6 +38,10 @@
 
 /* per-request budgets ---------------------------------------------------- */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (256 * 1024)
+/* Dynamic window ceiling: the real per-request context cap (the window is derived
+ * from free PSRAM, then clamped to this). On a P4 with tens of MB of PSRAM the
+ * binding constraint is cost and model context, not memory - calibration knob #1. */
+#define CLAW_TIER_CTX_W_CEILING                  (256 * 1024)
 #define CLAW_TIER_RUNTIME_KEEP_ROUNDS            16
 #define CLAW_TIER_RUNTIME_ARG_MAX_BYTES          600
 #define CLAW_TIER_TOOL_RESULT_MAX_BYTES          (48 * 1024)
@@ -106,6 +110,7 @@
 /* per-request budgets ---------------------------------------------------- */
 /* Placeholder: copied from the P4 tier. Re-measure on real hardware. */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (256 * 1024)
+#define CLAW_TIER_CTX_W_CEILING                  (256 * 1024)
 #define CLAW_TIER_RUNTIME_KEEP_ROUNDS            16
 #define CLAW_TIER_RUNTIME_ARG_MAX_BYTES          600
 #define CLAW_TIER_TOOL_RESULT_MAX_BYTES          (48 * 1024)
@@ -173,6 +178,8 @@
 
 /* per-request budgets ---------------------------------------------------- */
 #define CLAW_TIER_RUNTIME_BUDGET_BYTES           (48 * 1024)
+/* Same value the window module used as a flat constant before this moved here. */
+#define CLAW_TIER_CTX_W_CEILING                  (256 * 1024)
 #define CLAW_TIER_RUNTIME_KEEP_ROUNDS            4
 #define CLAW_TIER_RUNTIME_ARG_MAX_BYTES          200
 #define CLAW_TIER_TOOL_RESULT_MAX_BYTES          (8 * 1024)

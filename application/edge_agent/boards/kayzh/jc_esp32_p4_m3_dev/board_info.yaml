@@ -1,4 +1,8 @@
 board: jc_esp32_p4_m3_dev
 chip: esp32p4
-description: "jc_esp32_p4_m3_dev"
+# NOTE: bmgr writes this verbatim into a C string literal with no escaping. Keep it a
+# SINGLE-quoted yaml scalar, use \n for line breaks, never include a double quote.
+# Structured hardware facts belong in board_devices.yaml (the board_hardware_info
+# skill is generated from it); keep this to prose the generator cannot derive.
+description: 'ESP32-P4 eco2 rev v1.3: 16MB flash, 32MB hex PSRAM @200MHz. SD card on SDMMC 4-bit; with a card inserted the DATA root is /sdcard.\nDisplay: JD9365 over DSI. This panel does NOT support swap_xy - a boot-time swap_xy error is expected on this board, not a fault.\nAudio: ES8311 codec (I2C address 0x30 in 8-bit form) used for both playback and capture; I2S pins are in the generated inventory below.\nWiFi runs through an on-board hosted co-processor. The boot log reports a transport version mismatch (host newer than co-proc) on this unit; it is expected and networking works - do not try to reflash the co-processor.\nDevice names, chip models and occupied GPIOs are generated in the inventory below - read them there.'
 manufacturer: "JC"

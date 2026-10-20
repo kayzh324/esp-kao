@@ -51,10 +51,12 @@ static const char *TAG = "claw_core_window";
 #endif
 
 /* Memory-safety ceiling for W. Independent of how much PSRAM the chip reports:
- * the serialized request body must still fit in PSRAM with margin while the
- * display/TLS/WiFi are also using it. Raise only after on-device measurement. */
+ * the serialized request body must still fit with margin while the display/TLS/
+ * WiFi are also using it. It now comes from the tier so a bigger chip can be
+ * calibrated without touching this file; S3's value is unchanged. Raise only
+ * against measured data. */
 #ifndef CLAW_CTX_W_CEILING
-#define CLAW_CTX_W_CEILING (256 * 1024)
+#define CLAW_CTX_W_CEILING CLAW_TIER_CTX_W_CEILING
 #endif
 
 static size_t s_window_size = CLAW_CTX_W_FLOOR;

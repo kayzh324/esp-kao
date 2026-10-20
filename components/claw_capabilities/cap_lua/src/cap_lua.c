@@ -333,6 +333,51 @@ static const char *cap_lua_basename_from_path(const char *path)
     return slash ? slash + 1 : path;
 }
 
+/* App-package jobs (added): ESP KAO apps use "<app>/main.lua", so the basename
+ * alone is "main.lua" for every app and two apps can never run at the same time
+ * (the second submit is rejected as a name conflict). Name the job after the
+ * owning directory instead when the script uses that generic entry name. */
+static void cap_lua_default_job_name(const char *path, char *out, size_t out_size)
+{
+    const char *base = cap_lua_basename_from_path(path);
+    const char *slash = NULL;
+    const char *start = NULL;
+    size_t len;
+
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!base || !base[0]) {
+        return;
+    }
+    if (strcmp(base, "main.lua") != 0) {
+        strlcpy(out, base, out_size);
+        return;
+    }
+    slash = strrchr(path, '/');
+    if (!slash || slash == path) {
+        strlcpy(out, base, out_size);
+        return;
+    }
+    /* Find the start of the directory that owns main.lua. */
+    len = (size_t)(slash - path);
+    while (len > 0 && path[len - 1] != '/') {
+        len--;
+    }
+    start = path + len;
+    if (start >= slash) {
+        strlcpy(out, base, out_size);
+        return;
+    }
+    len = (size_t)(slash - start);
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
 static esp_err_t cap_lua_run_script_async_execute(const char *input_json,
                                                   const claw_cap_call_context_t *ctx,
                                                   char *output,
@@ -422,10 +467,7 @@ static esp_err_t cap_lua_run_script_async_execute(const char *input_json,
     if (name && name[0]) {
         strlcpy(job.name, name, sizeof(job.name));
     } else {
-        const char *base = cap_lua_basename_from_path(resolved_path);
-        if (base) {
-            strlcpy(job.name, base, sizeof(job.name));
-        }
+        cap_lua_default_job_name(resolved_path, job.name, sizeof(job.name));
     }
     if (exclusive && exclusive[0]) {
         strlcpy(job.exclusive, exclusive, sizeof(job.exclusive));

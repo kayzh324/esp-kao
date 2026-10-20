@@ -69,6 +69,10 @@
 #define CLAW_TIER_PROJECT_TRIGGER_CHARS          (160 * 1024)
 #define CLAW_TIER_PROJECT_KEEP_CHARS             (96 * 1024)
 #define CLAW_TIER_SUMMARY_MAX_CHARS              (16 * 1024)
+/* Was missing from this tier (found when the P4 target was first compiled): the
+ * summarizer prompt sizes its output with this, so the tier did not build at all.
+ * Kept at the S3 ratio (~0.3 of MAX): a summary is replayed every round. */
+#define CLAW_TIER_SUMMARY_TARGET_CHARS           5000
 #define CLAW_TIER_COMPACT_MIN_NEW_RECORDS        10
 #define CLAW_TIER_COMPACT_TOOL_TURNS             2
 
@@ -133,6 +137,10 @@
 #define CLAW_TIER_PROJECT_TRIGGER_CHARS          (160 * 1024)
 #define CLAW_TIER_PROJECT_KEEP_CHARS             (96 * 1024)
 #define CLAW_TIER_SUMMARY_MAX_CHARS              (16 * 1024)
+/* Was missing from this tier (found when the P4 target was first compiled): the
+ * summarizer prompt sizes its output with this, so the tier did not build at all.
+ * Kept at the S3 ratio (~0.3 of MAX): a summary is replayed every round. */
+#define CLAW_TIER_SUMMARY_TARGET_CHARS           5000
 #define CLAW_TIER_COMPACT_MIN_NEW_RECORDS        10
 #define CLAW_TIER_COMPACT_TOOL_TURNS             2
 

@@ -8,7 +8,7 @@
     </picture>
   </a>
 
-  <h1>ESP-Claw 🦞 AI Agent Framework for IoT Devices</h1>
+  <h1>ESP KAO 🦞 AI Agent Framework for IoT Devices</h1>
 
   <h3>💬 Chat as Creation · 🚀 Millisecond Response · 🧩 Smart and Extensible · 😋 Grows with You</h3>
 
@@ -17,7 +17,7 @@
       <img src="https://img.shields.io/badge/runs_on-ESP32_Series-red?style=flat-square" alt="Runs on ESP32 Series" />
     </a>
     <a href="./LICENSE">
-      <img src="https://img.shields.io/github/license/espressif/esp-claw?style=flat-square" alt="License" />
+      <img src="https://img.shields.io/github/license/kayzh324/esp-kao?style=flat-square" alt="License" />
     </a>
   </p>
 
@@ -32,6 +32,11 @@
   <a href="./README_CN.md">简体中文</a>
 
 </div>
+
+> **ESP KAO is a fork of [esp-claw](https://github.com/espressif/esp-claw).**
+> Current version **1.0.0**, forked from upstream `fb7b2481` (2026-08-20).
+> Why we forked and what we changed: [ESP_KAO.md](./ESP_KAO.md) · Version ledger and upstream merge log: [VERSIONS.md](./VERSIONS.md).
+> Upstream documentation and the online flashing service still apply unless this fork's docs say otherwise.
 
 **ESP-Claw** is Espressif's **Chat Coding** AI agent framework for IoT devices. It defines device behavior through conversation and completes the full loop of sensing, decision-making, and execution locally on Espressif chips. Inspired by the OpenClaw concept and reimplemented in C, ESP-Claw is lightweight, intelligent, and continuously evolving. With just an ESP32-series chip that costs only a few dollars, you can experience what makes ESP-Claw so nimble.
 

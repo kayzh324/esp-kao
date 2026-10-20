@@ -9,7 +9,7 @@
 
 | 项 | 值 |
 |---|---|
-| 设备 | S3_test_board（16 MB flash / 8 MB octal PSRAM），DATA 根 `/sdcard`，IP 192.168.31.120 |
+| 设备 | S3_test_board（16 MB flash / 8 MB octal PSRAM），DATA 根 `/sdcard`，IP 192.0.2.10 |
 | 会话 | root `304ea942` + `subagent_04`–`subagent_14`（11 个），共 12 份；按 `/api/files` 精确 size 校验下载 |
 | 未纳入 | `subagent_01`（旧世代 2 MB 会话）下载截断；其分析已在里程碑前完成，不参与本轮结论 |
 | 工具 | [`tools/session_eval.py`](./tools/session_eval.py)（本轮新增：metrics / roles / poll / paging / cost） |

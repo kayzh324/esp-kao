@@ -12,11 +12,11 @@ Endpoints used (see application/edge_agent/components/http_server/http_server_fi
 Paths are absolute and must live under the DATA root (usually /sdcard) or /system.
 
 Usage:
-    dev_fetch.py --base http://192.168.31.120 ls /sdcard/sessions
-    dev_fetch.py --base http://192.168.31.120 get /sdcard/apps/compass/main.lua -o main.lua
-    dev_fetch.py --base http://192.168.31.120 status
+    dev_fetch.py --base http://192.0.2.10 ls /sdcard/sessions
+    dev_fetch.py --base http://192.0.2.10 get /sdcard/apps/compass/main.lua -o main.lua
+    dev_fetch.py --base http://192.0.2.10 status
 
-Env: CLAW_BASE_URL (default http://192.168.31.120)
+Env: CLAW_BASE_URL (default http://192.0.2.10)
 """
 import argparse
 import json
@@ -62,7 +62,7 @@ def cmd_get(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=os.environ.get("CLAW_BASE_URL", "http://192.168.31.120"))
+    ap.add_argument("--base", default=os.environ.get("CLAW_BASE_URL", "http://192.0.2.10"))
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status").set_defaults(func=cmd_status)
     p_ls = sub.add_parser("ls")

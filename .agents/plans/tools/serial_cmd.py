@@ -8,7 +8,7 @@ Usage:
     serial_cmd.py [--port DEV] [--baud N] [--wait S] "cap list" "cap call get_system_info {}"
 
 Env:
-    CLAW_SERIAL_PORT   default: /dev/cu.usbserial-2120
+    CLAW_SERIAL_PORT   default: /dev/cu.usbserial-XXXX
     CLAW_SERIAL_BAUD   default: 115200
 
 Note:
@@ -28,7 +28,7 @@ import serial  # pyserial
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default=os.environ.get("CLAW_SERIAL_PORT", "/dev/cu.usbserial-2120"))
+    ap.add_argument("--port", default=os.environ.get("CLAW_SERIAL_PORT", "/dev/cu.usbserial-XXXX"))
     ap.add_argument("--baud", type=int, default=int(os.environ.get("CLAW_SERIAL_BAUD", "115200")))
     ap.add_argument("--wait", type=float, default=3.0, help="seconds to wait after each command")
     ap.add_argument("cmds", nargs="+", help="CLI command(s), e.g. 'cap list'")

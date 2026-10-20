@@ -3,7 +3,7 @@
 - 日期：2026-10-18
 - 蓝本方案：[`capacity-and-trust-hardening.md`](./capacity-and-trust-hardening.md)
 - 仓库 HEAD：`364fd129`
-- 设备：ESP32-S3 N16R8（16 MB Flash / 8 MB Octal PSRAM），串口 `/dev/cu.usbserial-2120`，STA IP `192.168.31.120`，DATA 根 `/sdcard`
+- 设备：ESP32-S3 N16R8（16 MB Flash / 8 MB Octal PSRAM），串口 `/dev/cu.usbserial-XXXX`，STA IP `192.0.2.10`，DATA 根 `/sdcard`
 - 板级：`application/edge_agent/boards/kayzh/esp32_S3_test_board`（`idf.py bmgr -c ./boards -b esp32_S3_test_board`）
 
 ---
@@ -39,7 +39,7 @@
 
 ## 2. 固件对齐 + 基线复现 —— ✅
 
-- `idf.py bmgr -c ./boards -b esp32_S3_test_board` → `idf.py build` → `idf.py -p /dev/cu.usbserial-2120 flash`
+- `idf.py bmgr -c ./boards -b esp32_S3_test_board` → `idf.py build` → `idf.py -p /dev/cu.usbserial-XXXX flash`
 - 对齐后基线内存（`get_system_info.memory`）：
 
 | 指标 | 对齐后基线 | 附录 D 参考 |
@@ -170,15 +170,15 @@ source ~/.espressif/v5.5.5/esp-idf/export.sh
 cd application/edge_agent
 idf.py bmgr -c ./boards -b esp32_S3_test_board
 idf.py build
-idf.py -p /dev/cu.usbserial-2120 flash
+idf.py -p /dev/cu.usbserial-XXXX flash
 
 # 设备状态 / 内存（HTTP 路径相对 DATA 根，不带 /sdcard 前缀）
-curl -s http://192.168.31.120/api/status
-curl -s "http://192.168.31.120/api/files?path=/sessions"
+curl -s http://192.0.2.10/api/status
+curl -s "http://192.0.2.10/api/files?path=/sessions"
 
 # 串口 CLI（IDF venv python，勿与 monitor 同开）
 PY=~/.espressif/tools/python/v5.5.5/venv/bin/python
-$PY -c "import serial,time; s=serial.Serial('/dev/cu.usbserial-2120',115200); s.write(b'cap call get_system_info {\"sections\":[\"memory\"]}\r\n'); time.sleep(2.5); print(s.read(s.in_waiting or 1).decode())"
+$PY -c "import serial,time; s=serial.Serial('/dev/cu.usbserial-XXXX',115200); s.write(b'cap call get_system_info {\"sections\":[\"memory\"]}\r\n'); time.sleep(2.5); print(s.read(s.in_waiting or 1).decode())"
 
 # 会话 id -> 文件名（FNV-1a 32）
 python3 -c "h=2166136261

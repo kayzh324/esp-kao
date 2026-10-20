@@ -8,7 +8,7 @@
     </picture>
   </a>
 
-  <h1>ESP-Claw 🦞 物联网设备 AI 智能体框架</h1>
+  <h1>ESP KAO 🦞 物联网设备 AI 智能体框架</h1>
 
   <h3>💬聊天即造物 · 🚀毫秒级响应 · 🧩智能可扩展 · 😋越用越懂你</h3>
 
@@ -17,7 +17,7 @@
       <img src="https://img.shields.io/badge/runs_on-ESP32_Series-red?style=flat-square" alt="Runs on ESP32 Series" />
     </a>
     <a href="./LICENSE">
-      <img src="https://img.shields.io/github/license/espressif/esp-claw?style=flat-square" alt="License" />
+      <img src="https://img.shields.io/github/license/kayzh324/esp-kao?style=flat-square" alt="License" />
     </a>
   </p>
 
@@ -32,6 +32,11 @@
   <a href="./README.md">English</a>
 
 </div>
+
+> **ESP KAO 是 [esp-claw](https://github.com/espressif/esp-claw) 的二开分支。**
+> 当前版本 **1.0.0**，分叉自上游 `fb7b2481`（2026-08-20）。
+> 为什么二开、我们改了什么：[ESP_KAO.md](./ESP_KAO.md) · 双版本台账与上游合并记录：[VERSIONS.md](./VERSIONS.md)。
+> 除本分支文档另有说明外，上游文档与在线烧录服务仍然适用。
 
 **ESP-Claw** 是乐鑫推出的面向物联网设备的 **Chat Coding「聊天造物」** 式 AI Agent 框架，以对话定义设备行为，在乐鑫芯片上本地完成感知、决策与执行的完整闭环。ESP-Claw 自 OpenClaw 理念出发，用 C 语言重新实现，轻盈、智能、成长。仅需一块几美元的 ESP32 系列芯片，便可体验 ESP-Claw 的轻灵特性。
 

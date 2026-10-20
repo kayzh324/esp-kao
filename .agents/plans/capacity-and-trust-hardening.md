@@ -341,7 +341,7 @@
 
 ### A.1 串口与 Python 环境
 
-- 串口设备：`/dev/cu.usbserial-2120`（USB-UART 桥）。若换口：`ls /dev/cu.*`
+- 串口设备：`/dev/cu.usbserial-XXXX`（USB-UART 桥）。若换口：`ls /dev/cu.*`
 - 设备控制台是 esp_console REPL，提示符 `app> `。
 - pyserial 在 ESP-IDF 的 venv 里（系统 python 没有）：
   ```bash
@@ -357,7 +357,7 @@ source ~/.espressif/v5.5.5/esp-idf/export.sh      # 另有 v6.0.2 / v6.1
 cd application/edge_agent
 idf.py bmgr -c ./boards -b esp32_S3_DevKitC_1     # 生成板级配置
 idf.py build
-idf.py -p /dev/cu.usbserial-2120 flash monitor
+idf.py -p /dev/cu.usbserial-XXXX flash monitor
 ```
 
 - 板级名以 `application/edge_agent/boards/` 下实际目录为准（本板 = `kayzh/esp32_S3_test_board`，构建参数用 `esp32_S3_DevKitC_1`）。
@@ -391,7 +391,7 @@ idf.py -p /dev/cu.usbserial-2120 flash monitor
 | DELETE | `/api/files?path=/sdcard/...&recursive=1` | 删除 |
 
 ```bash
-BASE=http://192.168.31.120
+BASE=http://192.0.2.10
 curl -s $BASE/api/status
 curl -s "$BASE/api/files?path=/sdcard/sessions"
 curl -s "$BASE/files/sdcard/apps/compass/main.lua" -o main.lua
@@ -428,8 +428,8 @@ $PY tools/serial_cmd.py 'cap call lua_tail_async_job {"job_id":"<id>","max_bytes
 
 ### A.6 网络
 
-- 设备 STA IP：`192.168.31.120`（用 `/api/status` 或 `cap call get_system_info {"sections":["ip"]}` 复核，DHCP 可能变）。
-- AP 回退：SSID `esp-claw-705B59`，IP `192.168.4.1`。
+- 设备 STA IP：`192.0.2.10`（用 `/api/status` 或 `cap call get_system_info {"sections":["ip"]}` 复核，DHCP 可能变）。
+- AP 回退：SSID `esp-claw-XXXXXX`，IP `192.168.4.1`。
 
 ---
 
@@ -491,7 +491,7 @@ memory:
   psram_free              1138668 B (≈1.1 MB)
   psram_largest_block     1081344 B (≈1.03 MB)
 storage_base_path: /sdcard
-ip: 192.168.31.120
+ip: 192.0.2.10
 ```
 
 **由本快照直接可得的结论**：

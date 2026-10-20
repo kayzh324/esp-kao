@@ -121,7 +121,7 @@ LLM 配置原样保留（NVS 在 0xa000，新旧分区布局一致）。
 | 存储 | SDMMC 4-bit，`/sdcard`，卡 29.7 GB |
 | 显示 | JD9365 DSI 初始化成功；**swap_xy 不支持**（启动警告属预期） |
 | 音频 | ES8311（I2C 0x30）双向初始化成功 |
-| 网络 | WiFi 正常（192.168.31.135）；桌面自检 7/7 online |
+| 网络 | WiFi 正常（192.0.2.10）；桌面自检 7/7 online |
 
 ### context 基线（`get_system_info {"sections":["context"]}`）
 

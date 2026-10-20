@@ -6,6 +6,14 @@ This file provides guidance to agents when working with code in this repository.
 
 ESP-Claw is an ESP-IDF firmware project for running an AI agent framework on Espressif IoT devices. The main application is `application/edge_agent/`; reusable firmware components live under `components/`. The repo also contains board definitions, build-time FATFS content, documentation, and the embedded device settings UI.
 
+## ESP KAO Fork
+
+This repository is the **ESP KAO** fork of `espressif/esp-claw`. Remote `origin` is `kayzh324/esp-kao`; remote `upstream` is the official repository.
+
+- Why we forked and what this branch optimizes: [`ESP_KAO.md`](ESP_KAO.md)
+- Dual version ledger (upstream base + ESP KAO releases) and the upstream merge procedure: [`VERSIONS.md`](VERSIONS.md)
+- Read [`VERSIONS.md`](VERSIONS.md) §4 before merging any upstream update. Our project-code edits carry `(added)` comments so conflicts can be resolved deliberately.
+
 ## Development Commands
 
 Export ESP-IDF before firmware work:

@@ -2,20 +2,26 @@
 
 - 日期：2026-10-21
 - 前置：批次 1（`a2299b95`）、批次 2（`e716c823`）已完成并真机验证
-- 状态：**代码完成，待真机验证**（板子 USB 串口中途消失，等待重新连接）
+- 状态：**已完成**（真机验证通过，2026-10-21）
 
-## 执行记录（2026-10-21）
+## 执行结果
 
 | 项 | 结果 |
 |---|---|
-| SCD41 | 已改为 `lua_driver_i2c_ref_bus` + `cap_lua_hw_claim`，Lua API 不变 |
-| IMU / 磁力计 / SCI | 已采用上游实现（板载 device / 外接 chip 两种构造） |
-| QMI8658 | backend 已迁到新接口 + 原生 `i2c_master_transfer`，Kconfig/CMake/注册完成 |
-| 兼容层 | **未添加**（按最新原则：应用适配系统） |
-| 构建 | `esp32_S3_test_board` 与 `lichuang_dev_board` 均通过 |
-| 待办 | `compass` app 改到新构造函数与校准语义；`hwmap`/传感器读数真机验证 |
+| SCD41 | 已改为 board peripheral ref + `cap_lua_hw_claim`（设备键动态注册）；读数 1348 ppm / 29.1 °C / 48.9 % |
+| IMU / 磁力计 / SCI | 已采用上游实现；S3 板 IMU、磁力计读数正常 |
+| QMI8658 | backend 支持板载 dev handle；立创板 setup 已加，构建通过 |
+| 板级 setup | 新增 `setup_imu.c` / `setup_magnetometer.c`，按上游 `CUSTOM_DEVICE_IMPLEMENT` 模式 |
+| 兼容层 | 未添加；`compass` app 已改为 `{device=...}` 构造 |
+| 构建 | S3 测试板、立创板、P4（jc_esp32_p4_m3_dev）均通过 |
+| hwmap | `device:scd41_sensor` 可注册/释放；IMU/磁力计走板载 device 键 |
 
-**阻塞**：设备 USB 串口 `/dev/cu.usbserial-2120` 在批次中途消失，无法继续烧录与实测。恢复连接后继续。
+## 遗留问题
+
+1. **compass 仍卡在 display.init**：旧 display API 与 board_manager 的句柄类型在 pcall 路径下失败，
+   属第 4 批（display 重写）范围。传感器部分已验证可用。
+2. **IMU 首读为 0**：BMI270 上电后需要 settle；compass 已有重试，探针需延迟读取。
+3. **立创板 QMI8658 仅构建验证**，未上板实测。
 
 ## 1. 目标
 

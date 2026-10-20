@@ -168,3 +168,20 @@ trim_count = refuse_count = 0
 已清理（同日）：`SERIALIZE_REFUSE_BYTES`、`SERIALIZE_EST_BUDGET_BYTES`、`CLAW_TIER_NAME`
 三个档位宏无人使用（闸门自己按 W+trigger+preamble 算），已从三档删除；重新扫描确认
 `CLAW_TIER_*` 无死宏，且清理后 `get_system_info` 的数值不变（证明它们确实没参与运行）。
+
+---
+
+## 8. 工具层小修（2026-10-20，来自 radioTest 实测）
+
+| 改动 | 依据 | 设备验证（非任务调用） |
+|---|---|---|
+| `grep_files`：首次无匹配且 pattern 像正则时，把正则语法中和成字面候选再搜一次，命中则在结果末尾标注；两次都无匹配则提示 `\w`/`\d`/`\.` 是字面字符。描述与 schema 同步 | radioTest 里 `display\.\w+` 静默零匹配、白烧一轮；工具本就没有正则引擎，只有 `|` 或运算 | `display.+` → 回退命中 3 条并标注；`zzz+` → 无匹配并提示 |
+| `edit_file`：`old_text` 未命中时，找出包含其**首行**的位置并附 `hint: line N contains ...` | 同一任务出现 5 次未命中，每次约一轮 | 经 Lua `capability` 桥构造带换行的 `old_text` → 返回 `hint: line 1 contains the first line of old_text: ALPHA line one` |
+
+**新增的操作/测量陷阱（都踩过）：**
+- **串口 CLI 按空格切分参数**：`cap call` 的 JSON 里**不能有空格**（会被当成下一个参数，报 `invalid json`），
+  引号也不被识别。要传含空格/换行的 JSON，走 Lua 桥：
+  `capability.call("<cap>", "<json string>", {max_output_bytes=N})`，脚本经 HTTP 上传后
+  `cap call lua_run_script {"path":...}` 执行。
+- **读串口会复位板子**，而 `context` 计数器（trim/refuse/last_body）是每次开机清零的 ——
+  测试后想读这些数，必须在**任何串口操作之前**读，或在测试期间抓日志。

@@ -34,7 +34,7 @@ extern "C" {
 #define CLAW_CORE_DEFAULT_REQUEST_Q       CLAW_TIER_CORE_REQUEST_Q
 #define CLAW_CORE_DEFAULT_RESPONSE_Q      CLAW_TIER_CORE_RESPONSE_Q
 #define CLAW_CORE_DEFAULT_TOOL_ITERATIONS CLAW_TIER_CORE_TOOL_ITERATIONS
-#define CLAW_CORE_INSERT_QUEUE_LEN        4
+#define CLAW_CORE_RUN_INBOX_CAPACITY      4
 #define CLAW_CORE_INFLIGHT_SESSION_ID_SIZE 128
 #ifndef CLAW_CORE_LOG_SNIPPET_LEN
 #define CLAW_CORE_LOG_SNIPPET_LEN         96
@@ -43,7 +43,15 @@ extern "C" {
 #define CLAW_CORE_OBS_CSV_MAX             384
 #define CLAW_CORE_MAX_COMPLETION_OBSERVERS 4
 
+typedef struct claw_core_pending_run {
+    const char *session_id;
+    uint32_t request_id;
+    struct claw_core_pending_run *next;
+} claw_core_pending_run_t;
+
 typedef struct {
+    claw_core_handle_t owner;
+    claw_core_pending_run_t *pending;
     claw_core_request_t view;
     char *owned_session_id;
     char *owned_user_text;
@@ -60,6 +68,10 @@ typedef struct {
     claw_core_response_t view;
 } claw_core_response_item_t;
 
+typedef struct {
+    char *text;
+} claw_core_inbox_item_t;
+
 typedef struct claw_core_pending_response {
     claw_core_response_item_t item;
     struct claw_core_pending_response *next;
@@ -74,7 +86,7 @@ typedef struct {
 typedef enum {
     CLAW_CORE_CONTROL_ABORT_REASON_NONE = 0,
     CLAW_CORE_CONTROL_ABORT_REASON_CANCEL,
-    CLAW_CORE_CONTROL_ABORT_REASON_USER_INTERRUPT,
+    CLAW_CORE_CONTROL_ABORT_REASON_RUN_INBOX,
 } claw_core_control_abort_reason_t;
 
 struct claw_core_state {
@@ -106,6 +118,7 @@ struct claw_core_state {
     uint32_t max_tool_iterations;
     /* Waiting queue: entries start new agent loops when the core task is idle. */
     QueueHandle_t request_queue;
+    claw_core_pending_run_t *pending_runs;
     QueueHandle_t response_queue;
     TaskHandle_t task_handle;
     SemaphoreHandle_t response_lock;
@@ -121,9 +134,9 @@ struct claw_core_state {
     volatile bool blocked_requested;
     char blocked_reason[192];
     claw_core_control_abort_reason_t inflight_abort_reason;
-    claw_core_request_item_t insert_queue[CLAW_CORE_INSERT_QUEUE_LEN];
-    size_t insert_queue_head;
-    size_t insert_queue_count;
+    claw_core_inbox_item_t run_inbox[CLAW_CORE_RUN_INBOX_CAPACITY];
+    size_t run_inbox_head;
+    size_t run_inbox_count;
     struct {
         claw_core_completion_observer_fn fn;
         void *user_ctx;
@@ -152,15 +165,20 @@ bool claw_core_llm_config_ready(claw_core_state_t *core,
                                 size_t message_size);
 
 void claw_core_free_request_item(claw_core_request_item_t *item);
-esp_err_t claw_core_ingress_submit(claw_core_state_t *core,
-                                   const claw_core_request_t *request,
-                                   uint32_t timeout_ms);
-bool claw_core_ingress_dequeue_inserted_user_inputs(claw_core_state_t *core,
-                                                    const char *session_id,
-                                                    char **texts,
-                                                    size_t max_count,
-                                                    size_t *out_count);
-void claw_core_ingress_clear_insert_queue_locked(claw_core_state_t *core);
+esp_err_t claw_core_ingress_start_run(claw_core_state_t *core,
+                                      const claw_core_request_t *request,
+                                      uint32_t timeout_ms);
+esp_err_t claw_core_ingress_post_message(
+    claw_core_state_t *core,
+    const claw_core_request_t *request,
+    uint32_t timeout_ms,
+    claw_core_message_receipt_t *out_receipt);
+bool claw_core_ingress_drain_run_inbox(claw_core_state_t *core,
+                                       const char *session_id,
+                                       char **texts,
+                                       size_t max_count,
+                                       size_t *out_count);
+void claw_core_ingress_clear_run_inbox_locked(claw_core_state_t *core);
 
 void claw_core_free_response_item(claw_core_response_item_t *item);
 esp_err_t claw_core_response_push(claw_core_state_t *core, claw_core_response_item_t *item);
@@ -226,10 +244,10 @@ void claw_core_finish_from_plain_text(uint32_t request_id,
                                       claw_core_response_t *response);
 
 void claw_core_control_set_phase(claw_core_state_t *core, claw_core_agent_loop_phase_t phase);
-bool claw_core_control_take_user_interrupt_http_abort(claw_core_state_t *core,
-                                                      uint32_t request_id);
-void claw_core_control_clear_user_interrupt_abort(claw_core_state_t *core,
-                                                  uint32_t request_id);
+bool claw_core_control_take_run_inbox_http_abort(claw_core_state_t *core,
+                                                 uint32_t request_id);
+void claw_core_control_clear_run_inbox_abort(claw_core_state_t *core,
+                                             uint32_t request_id);
 esp_err_t claw_core_control_cancel_request(claw_core_state_t *core, uint32_t request_id);
 claw_core_agent_loop_phase_t claw_core_control_get_phase(claw_core_state_t *core);
 

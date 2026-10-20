@@ -3,6 +3,7 @@ idf_component_register(
         "src/claw_agent_mgr.c"
         "src/claw_agent_mgr_report.c"
         "src/claw_session_mgr.c"
+        "src/claw_session_catalog.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

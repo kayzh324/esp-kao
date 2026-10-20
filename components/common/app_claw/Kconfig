@@ -16,6 +16,15 @@ menu "App Claw Config"
             is enabled, Lua LVGL scripts switch screens inside this runtime
             instead of initializing LVGL directly.
 
+    config APP_CLAW_MAX_TOOL_ITERATIONS
+        int "Maximum tool-call iterations per turn"
+        default 240 if IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31
+        default 100
+        range 1 1024
+        help
+            Set the maximum number of tool-call iterations allowed during a
+            single agent turn. Defaults follow the ESP KAO performance tiers:
+            P4/S31 modules run longer turns than the S3 floor.
 
     choice APP_CLAW_MEMORY_MODE
         prompt "App Claw memory management mode"
@@ -344,6 +353,7 @@ menu "App Claw Config"
         config APP_CLAW_LUA_MODULE_ENVIRONMENTAL_SENSOR
             bool "Enable environmental sensor Lua module"
             default n
+            select APP_CLAW_LUA_DRIVER_I2C if LUA_MODULE_ENVIRONMENTAL_SENSOR_BACKEND_BME690
             help
                 Enable the environmental sensor Lua module and keep app_claw's direct
                 dependency on lua_module_environmental_sensor when Lua capability is enabled.
@@ -439,6 +449,14 @@ menu "App Claw Config"
                 Enable the LEDC Lua module and keep app_claw's direct dependency
                 on lua_module_ledc when Lua capability is enabled.
 
+        config APP_CLAW_LUA_DRIVER_LEDC
+            bool "Enable LEDC Lua driver"
+            default n
+            help
+                Enable the LEDC Lua driver and keep app_claw's direct dependency
+                on lua_driver_ledc when Lua capability is enabled. Disabled while
+                the project keeps its own lua_module_ledc binding.
+
         config APP_CLAW_LUA_MODULE_LED_STRIP
             bool "Enable LED strip Lua module"
             default y
@@ -463,6 +481,7 @@ menu "App Claw Config"
         config APP_CLAW_LUA_MODULE_SCI
             bool "Enable DFRobot SCI Lua module"
             default n
+            select APP_CLAW_LUA_DRIVER_I2C
             help
                 Enable the DFRobot RP2040 SCI Acquisition Module Lua module and
                 keep app_claw's direct dependency on lua_module_sci when Lua

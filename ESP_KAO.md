@@ -5,8 +5,8 @@
 
 - 上游仓库：`espressif/esp-claw`（本仓库的 git remote 名为 `upstream`）
 - 本仓库：`kayzh324/esp-kao`（remote 名为 `origin`）
-- 当前版本：**ESP KAO 1.0.0**（tag `kao-v1.0.0`）
-- 分叉基线：上游 `master` @ `fb7b2481`（2026-08-20）
+- 当前版本：**ESP KAO 1.1.0**（已合入上游 `345073de`）
+- 当前上游基线：`345073de`（2026-10-19）；最初分叉基线 `fb7b2481`（2026-08-20）
 - 版本与合并记录：[`VERSIONS.md`](VERSIONS.md)
 
 ---
@@ -188,7 +188,7 @@ IM 通道、多后端 LLM 抽象、板级管理器都已成型。但在**长任�
 
 - 序列化 refuse 路径尚未在真实任务中触发过（只做过探针验证）；
 - 弱硬件兼容：无 PSRAM 板仍无法派发子 agent；"PSRAM + 内部 flash DATA" 板型有栈断言风险；
-- 显示资源所有权 / 租约（Stage 2/3）只完成设计；
+- ~~显示资源所有权 / 租约（Stage 2/3）只完成设计~~ —— 1.1.0 已随上游 `claw_hw_registry` 落地；
 - 脚本写文件绕过 `.versions` 快照；
 - P4 / S31 档位参数尚待更多板级实测校准；
 - 流式输出与 prompt cache 仍未做。

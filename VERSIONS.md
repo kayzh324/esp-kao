@@ -56,7 +56,7 @@
 | 版本 | tag | 日期 | 分支 | 主要变化 |
 |---|---|---|---|---|
 | 1.0.0 | `kao-v1.0.0` | 2026-10-20 | `feat/agent-rework` | 首个版本。M1 + M2 agent harness 改造：工具层（`edit_file` / `grep_files` / 分页读取）、上下文投影与分级逐出、序列化降峰与诊断、委派准入与存活检测、等待语义、网关重试、性能档位、硬件事实生成 |
-| 1.1.0 | 待打 | 2026-10-21 | `feat/agent-rework` | 合并上游 `345073de`（134 提交）。核心运行时对齐（`post_message` + receipt、`llm_authorizer`、历史读 API + `history_lock`、技能注册表、存储 space provider）；显示/启动器切到上游 display service + system_ui + app_registry；硬件层改用 `claw_hw_registry` 租约；保留 tier/窗口、投影、序列化闸门、工具层、子 agent 治理、`wait_ms`、传输重试、opencode-go。S3 板真机验收通过 |
+| 1.1.0 | 待打 | 2026-10-21 | `feat/agent-rework` | 合并上游 `345073de`（134 提交）。核心运行时对齐（`post_message` + receipt、`llm_authorizer`、历史读 API + `history_lock`、技能注册表、存储 space provider）；显示/启动器切到上游 display service + system_ui + app_registry；硬件层改用 `claw_hw_registry` 租约；保留 tier/窗口、投影、序列化闸门、工具层、子 agent 治理、`wait_ms`、传输重试、opencode-go。S3 板真机验收通过；P4 板板级验证通过（显示/SD/音频/WiFi/USB HID） |
 
 ### 3.1 1.0.0 内容锚点
 

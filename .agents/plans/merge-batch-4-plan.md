@@ -116,3 +116,24 @@
    新增 `display.open({ exit_gesture = false })`，由应用自行选择退出方式。
 3. **新 API 的 `present()` 会结束当前帧**：应用在 present 后继续绘制会报
    `display frame is not active`。2048 的计分帧改为重新 begin。
+
+## 板级验证记录
+
+### S3 测试板（2026-10-21）
+
+- 启动器 2x4 网格、左右翻页、点击启动应用正常；
+- display service + 5 点触摸正常；
+- SD、WiFi、SCD41、IMU、磁力计正常；
+- compass / co2_monitor / pomodoro / game_2048 / hello_demo 验收通过；
+- 系统退出手势与游戏滑动冲突已通过 `exit_gesture=false` 解决。
+
+### P4 板 jc_esp32_p4_m3_dev（2026-10-21，仅板级）
+
+- MIPI DSI 800x1280 显示初始化与 display service 正常；
+- SD 卡 31.9 GB 挂载为 DATA 根，router/scheduler/memory 正常加载；
+- ES8311 audio mixer + capture 启动；
+- WiFi 连接正常；
+- USB Host HID（2.4G 接收器，高�� OTG）：键盘、鼠标、两个 generic 接口枚举成功，键值与指针报告可读；
+- 启动窗口 W=655360（P4 tier 生效）；
+- 已知缺口：官方启动器只接触摸，P4 无触摸且 HID 尚未桥接到 LVGL，暂时无法用键鼠翻页/选择（按产品决定暂不处理）；
+- SD 上的定制 desktop 按约定保留、不注册、不迁移；其开机自启规则仍会尝试运行并失败，属预期。

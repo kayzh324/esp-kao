@@ -48,8 +48,11 @@ local function scan()
       if ok_open and dev then
         kb, kb_id = dev, d.id
         prev_keys = {}
-        ui.set_arrow_swap(d.vid == 0x1915 and d.pid == 0x1025)
-        print("[hid_input] keyboard attached id=" .. tostring(d.id))
+        local vid = d.vendor_id or d.vid or 0
+        local pid = d.product_id or d.pid or 0
+        ui.set_arrow_swap(vid == 0x1915 and pid == 0x1025)
+        print(string.format("[hid_input] keyboard attached id=%d vid=0x%04x pid=0x%04x",
+                            d.id, vid, pid))
       end
     elseif d.type == "mouse" and not ms then
       local ok_open, dev = pcall(hid.open, d.id)

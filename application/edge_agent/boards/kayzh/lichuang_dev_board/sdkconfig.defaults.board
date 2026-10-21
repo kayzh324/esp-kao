@@ -19,7 +19,6 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # Expose the panel and its capacitive touch to Lua scripts.
 CONFIG_APP_CLAW_LUA_MODULE_LCD=y
-CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH=y
 
 # DVP camera: GC0308 (VGA). 8-bit DVP, 20 MHz XCLK, YUV422 default format.
 CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y

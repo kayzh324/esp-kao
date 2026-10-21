@@ -24,6 +24,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_xpt2046.h"
+#include "devices/dev_lcd_touch/dev_lcd_touch.h"
 
 static const char *TAG = "setup_device";
 
@@ -612,12 +613,14 @@ esp_err_t lcd_panel_factory_entry_t(esp_lcd_panel_io_handle_t io, const esp_lcd_
  *
  * dev_lcd_touch only implements sub_type i2c (dev_lcd_touch_sub_spi.c is a TODO
  * stub), so the panel IO and the esp_lcd_touch handle are built here instead.
- * The device handle returned to the board manager is the esp_lcd_touch_handle_t
- * itself, so Lua can feed it straight into the lcd_touch module:
- *
- *   local h = board_manager.get_device_handle("lcd_touch")
- *   local t = lcd_touch.poll(h)
+ * The board manager handle must be a dev_lcd_touch_handles_t because the display
+ * service casts it to that type to read the touch handle.
  */
+typedef struct {
+    dev_lcd_touch_handles_t handles;  /* must stay first */
+    esp_lcd_panel_io_handle_t io;
+    esp_lcd_touch_handle_t touch;
+} s3_lcd_touch_handle_t;
 static int lcd_touch_init(void *config, int cfg_size, void **device_handle)
 {
     (void)cfg_size;
@@ -677,7 +680,18 @@ static int lcd_touch_init(void *config, int cfg_size, void **device_handle)
         return ret;
     }
 
-    *device_handle = touch_handle;
+    s3_lcd_touch_handle_t *handle = calloc(1, sizeof(*handle));
+    if (handle == NULL) {
+        (void)esp_lcd_touch_del(touch_handle);
+        (void)esp_lcd_panel_io_del(io_handle);
+        (void)esp_board_periph_unref_handle(cfg->peripheral_name);
+        return ESP_ERR_NO_MEM;
+    }
+    handle->handles.touch_handle = touch_handle;
+    handle->handles.io_handle = io_handle;
+    handle->io = io_handle;
+    handle->touch = touch_handle;
+    *device_handle = &handle->handles;
     ESP_LOGI(TAG, "XPT2046 touch initialized on %s, cs=%d, %d Hz",
              cfg->peripheral_name, (int)cfg->cs_gpio_num, (int)cfg->clock_speed_hz);
     return ESP_OK;
@@ -689,8 +703,9 @@ static int lcd_touch_deinit(void *device_handle)
         return ESP_OK;
     }
 
-    esp_lcd_touch_handle_t touch_handle = (esp_lcd_touch_handle_t)device_handle;
-    esp_lcd_panel_io_handle_t io_handle = touch_handle->io;
+    s3_lcd_touch_handle_t *handle = (s3_lcd_touch_handle_t *)device_handle;
+    esp_lcd_touch_handle_t touch_handle = handle->touch;
+    esp_lcd_panel_io_handle_t io_handle = handle->io;
 
     esp_err_t ret = esp_lcd_touch_del(touch_handle);
     if (io_handle) {
@@ -702,6 +717,7 @@ static int lcd_touch_deinit(void *device_handle)
     if (cfg && cfg->peripheral_name) {
         (void)esp_board_periph_unref_handle(cfg->peripheral_name);
     }
+    free(handle);
     return ret;
 }
 

@@ -23,8 +23,7 @@ menu "App Claw Config"
         range 1 1024
         help
             Set the maximum number of tool-call iterations allowed during a
-            single agent turn. Defaults follow the ESP KAO performance tiers:
-            P4/S31 modules run longer turns than the S3 floor.
+            single agent turn.
 
     choice APP_CLAW_MEMORY_MODE
         prompt "App Claw memory management mode"
@@ -271,13 +270,6 @@ menu "App Claw Config"
                 Enable the UART Lua driver and keep app_claw's direct dependency
                 on lua_driver_uart when Lua capability is enabled.
 
-        config APP_CLAW_LUA_DRIVER_USB_HOST_HID
-            bool "Enable USB Host HID Lua driver"
-            default n
-            help
-                Enable the USB Host HID driver and keep app_claw's direct dependency
-                on lua_driver_usb_host_hid when Lua capability is enabled.
-
         comment "--- Higher-level modules (lua_module) ---"
 
         config APP_CLAW_LUA_MODULE_AUDIO
@@ -358,13 +350,6 @@ menu "App Claw Config"
                 Enable the environmental sensor Lua module and keep app_claw's direct
                 dependency on lua_module_environmental_sensor when Lua capability is enabled.
 
-        config LUA_MODULE_SCD41_SENSOR_ENABLE
-            bool "Enable SCD41 sensor Lua module"
-            default n
-            help
-                Enable the SCD41 CO2 sensor Lua module integration when Lua capability
-                is enabled.
-
         config APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
             bool "Enable event publisher Lua module"
             default y
@@ -434,28 +419,12 @@ menu "App Claw Config"
                 Enable the LCD Lua module and keep app_claw's direct dependency
                 on lua_module_lcd when Lua capability is enabled.
 
-        config APP_CLAW_LUA_MODULE_LCD_TOUCH
-            bool "Enable LCD touch Lua module"
-            default y if ESP_BOARD_DEV_LCD_TOUCH_SUPPORT && ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT
-            default n
-            help
-                Enable the LCD touch Lua module and keep app_claw's direct dependency
-                on lua_module_lcd_touch when Lua capability is enabled.
-
-        config APP_CLAW_LUA_MODULE_LEDC
+        config APP_CLAW_LUA_DRIVER_LEDC
             bool "Enable LEDC Lua module"
             default y
             help
                 Enable the LEDC Lua module and keep app_claw's direct dependency
-                on lua_module_ledc when Lua capability is enabled.
-
-        config APP_CLAW_LUA_DRIVER_LEDC
-            bool "Enable LEDC Lua driver"
-            default n
-            help
-                Enable the LEDC Lua driver and keep app_claw's direct dependency
-                on lua_driver_ledc when Lua capability is enabled. Disabled while
-                the project keeps its own lua_module_ledc binding.
+                on lua_driver_ledc when Lua capability is enabled.
 
         config APP_CLAW_LUA_MODULE_LED_STRIP
             bool "Enable LED strip Lua module"

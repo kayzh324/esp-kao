@@ -24,7 +24,6 @@ CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE=y
 
 # XPT2046 touch is a custom device, so the dev_lcd_touch auto-defaults do not
 # fire; enable the Lua module explicitly.
-CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH=y
 
 CONFIG_ESP_BOARD_PERIPH_LEDC_SUPPORT=y
 
@@ -33,3 +32,4 @@ CONFIG_LV_BUILD_EXAMPLES=n
 # custom usb hid setting
 CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID=y
 CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS=2000
+

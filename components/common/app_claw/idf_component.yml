@@ -192,12 +192,6 @@ dependencies:
       - if: $CONFIG{APP_CLAW_LUA_DRIVER_UART} == True
     path: ../../lua_modules/lua_driver_uart
 
-  lua_driver_usb_host_hid:
-    rules:
-      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
-      - if: $CONFIG{APP_CLAW_LUA_DRIVER_USB_HOST_HID} == True
-    path: ../../lua_modules/lua_driver_usb_host_hid
-
   # --- lua_module (higher-level modules) ---
 
   lua_module_audio:
@@ -262,12 +256,6 @@ dependencies:
       - if: $CONFIG{APP_CLAW_LUA_MODULE_ENVIRONMENTAL_SENSOR} == True
     path: ../../lua_modules/lua_module_environmental_sensor
 
-  lua_module_scd41_sensor:
-    rules:
-      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
-      - if: $CONFIG{LUA_MODULE_SCD41_SENSOR_ENABLE} == True
-    path: ../../lua_modules/lua_module_scd41_sensor
-
   lua_module_event_publisher:
     rules:
       - if: $CONFIG{APP_CLAW_CAP_LUA} == True
@@ -328,21 +316,11 @@ dependencies:
       - if: $CONFIG{APP_CLAW_LUA_MODULE_LCD} == True
     path: ../../lua_modules/lua_module_lcd
 
-  lua_module_lcd_touch:
-    # APP_CLAW_LUA_MODULE_LCD_TOUCH already defaults to y for dev_lcd_touch/i2c
-    # boards. Boards whose touch controller sits on SPI have to build it as a
-    # custom device (dev_lcd_touch has no SPI sub-type yet), so the rules must
-    # not hard-require the dev_lcd_touch i2c symbols here.
+  lua_driver_ledc:
     rules:
       - if: $CONFIG{APP_CLAW_CAP_LUA} == True
-      - if: $CONFIG{APP_CLAW_LUA_MODULE_LCD_TOUCH} == True
-    path: ../../lua_modules/lua_module_lcd_touch
-
-  lua_module_ledc:
-    rules:
-      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
-      - if: $CONFIG{APP_CLAW_LUA_MODULE_LEDC} == True
-    path: ../../lua_modules/lua_module_ledc
+      - if: $CONFIG{APP_CLAW_LUA_DRIVER_LEDC} == True
+    path: ../../lua_modules/lua_driver_ledc
 
   lua_module_led_strip:
     rules:

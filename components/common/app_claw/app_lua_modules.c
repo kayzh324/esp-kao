@@ -39,9 +39,6 @@
 #if CONFIG_APP_CLAW_LUA_DRIVER_UART
 #include "lua_driver_uart.h"
 #endif
-#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
-#include "lua_driver_usb_host_hid.h"
-#endif
 
 /* --- lua_module (higher-level modules) --- */
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
@@ -77,9 +74,6 @@
 #if CONFIG_APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
 #include "lua_module_event_publisher.h"
 #endif
-#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
-#include "lua_module_scd41_sensor.h"
-#endif
 #if CONFIG_APP_CLAW_LUA_MODULE_HTTP_SERVER
 #include "lua_module_http_server.h"
 #endif
@@ -104,11 +98,8 @@
 #if CONFIG_APP_CLAW_LUA_MODULE_LCD
 #include "lua_module_lcd.h"
 #endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH
-#include "lua_module_lcd_touch.h"
-#endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LEDC
-#include "lua_module_ledc.h"
+#if CONFIG_APP_CLAW_LUA_DRIVER_LEDC
+#include "lua_driver_ledc.h"
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_LED_STRIP
 #include "lua_module_led_strip.h"
@@ -388,14 +379,6 @@ static esp_err_t app_lua_register_uart(const char *fatfs_base_path)
 }
 #endif
 
-#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
-static esp_err_t app_lua_register_usb_host_hid(const char *fatfs_base_path)
-{
-    (void)fatfs_base_path;
-    return lua_driver_usb_host_hid_register();
-}
-#endif
-
 /* --- lua_module register wrappers --- */
 
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
@@ -478,14 +461,6 @@ static esp_err_t app_lua_register_environmental_sensor(const char *fatfs_base_pa
 }
 #endif
 
-#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
-static esp_err_t app_lua_register_scd41_sensor(const char *fatfs_base_path)
-{
-    (void)fatfs_base_path;
-    return lua_module_scd41_sensor_register();
-}
-#endif
-
 #if CONFIG_APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
 static esp_err_t app_lua_register_event_publisher(const char *fatfs_base_path)
 {
@@ -558,19 +533,11 @@ static esp_err_t app_lua_register_lcd(const char *fatfs_base_path)
 }
 #endif
 
-#if CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH
-static esp_err_t app_lua_register_lcd_touch(const char *fatfs_base_path)
-{
-    (void)fatfs_base_path;
-    return lua_module_lcd_touch_register();
-}
-#endif
-
-#if CONFIG_APP_CLAW_LUA_MODULE_LEDC
+#if CONFIG_APP_CLAW_LUA_DRIVER_LEDC
 static esp_err_t app_lua_register_ledc(const char *fatfs_base_path)
 {
     (void)fatfs_base_path;
-    return lua_module_ledc_register();
+    return lua_driver_ledc_register();
 }
 #endif
 
@@ -655,9 +622,6 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_DRIVER_UART
     { "uart", "UART", app_lua_register_uart },
 #endif
-#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
-    { "usb_host_hid", "USB Host HID", app_lua_register_usb_host_hid },
-#endif
     /* --- lua_module (higher-level modules) --- */
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
     { "audio", "Audio", app_lua_register_audio },
@@ -689,9 +653,6 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_MODULE_ENVIRONMENTAL_SENSOR
     { "environmental_sensor", "Environmental Sensor", app_lua_register_environmental_sensor },
 #endif
-#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
-    { "scd41_sensor", "SCD41 Sensor", app_lua_register_scd41_sensor },
-#endif
 #if CONFIG_APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
     { "event_publisher", "Event Publisher", app_lua_register_event_publisher },
 #endif
@@ -719,10 +680,7 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_MODULE_LCD
     { "lcd", "LCD", app_lua_register_lcd },
 #endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH
-    { "lcd_touch", "LCD Touch", app_lua_register_lcd_touch },
-#endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LEDC
+#if CONFIG_APP_CLAW_LUA_DRIVER_LEDC
     { "ledc", "LEDC", app_lua_register_ledc },
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_LED_STRIP
@@ -832,10 +790,7 @@ static const app_lua_module_info_t s_lua_module_infos[] = {
 #if CONFIG_APP_CLAW_LUA_MODULE_LCD
     { "lcd", "LCD" },
 #endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LCD_TOUCH
-    { "lcd_touch", "LCD Touch" },
-#endif
-#if CONFIG_APP_CLAW_LUA_MODULE_LEDC
+#if CONFIG_APP_CLAW_LUA_DRIVER_LEDC
     { "ledc", "LEDC" },
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_LED_STRIP

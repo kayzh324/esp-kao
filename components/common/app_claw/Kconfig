@@ -350,6 +350,13 @@ menu "App Claw Config"
                 Enable the environmental sensor Lua module and keep app_claw's direct
                 dependency on lua_module_environmental_sensor when Lua capability is enabled.
 
+        config LUA_MODULE_SCD41_SENSOR_ENABLE
+            bool "Enable SCD41 sensor Lua module"
+            default y
+            help
+                Enable the SCD41 CO2 sensor Lua module integration when Lua
+                capability is enabled.
+
         config APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
             bool "Enable event publisher Lua module"
             default y

@@ -98,6 +98,9 @@
 #if CONFIG_APP_CLAW_LUA_MODULE_LCD
 #include "lua_module_lcd.h"
 #endif
+#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
+#include "lua_module_scd41_sensor.h"
+#endif
 #if CONFIG_APP_CLAW_LUA_DRIVER_LEDC
 #include "lua_driver_ledc.h"
 #endif
@@ -509,6 +512,14 @@ static esp_err_t app_lua_register_imu(const char *fatfs_base_path)
 }
 #endif
 
+#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
+static esp_err_t app_lua_register_scd41(const char *fatfs_base_path)
+{
+    (void)fatfs_base_path;
+    return lua_module_scd41_sensor_register();
+}
+#endif
+
 #if CONFIG_APP_CLAW_LUA_MODULE_IR
 static esp_err_t app_lua_register_ir(const char *fatfs_base_path)
 {
@@ -674,6 +685,9 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_MODULE_IR
     { "ir", "IR", app_lua_register_ir },
 #endif
+#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
+    { "scd41_sensor", "SCD41", app_lua_register_scd41 },
+#endif
 #if CONFIG_APP_CLAW_LUA_MODULE_KNOB
     { "knob", "Knob", app_lua_register_knob },
 #endif
@@ -783,6 +797,9 @@ static const app_lua_module_info_t s_lua_module_infos[] = {
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_IR
     { "ir", "IR" },
+#endif
+#if CONFIG_LUA_MODULE_SCD41_SENSOR_ENABLE
+    { "scd41_sensor", "SCD41" },
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_KNOB
     { "knob", "Knob" },

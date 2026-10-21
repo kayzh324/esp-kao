@@ -1561,9 +1561,20 @@ esp_err_t claw_session_mgr_visit(claw_session_visit_fn visit, void *ctx)
         cJSON *json = failed ? NULL : cJSON_Parse(text);
         free(text);
         const char *key = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "chat_key"));
-        if (!key) err = ESP_ERR_INVALID_RESPONSE;
-        else err = claw_session_mgr_load_mapping_locked(key, map);
+        if (!key) {
+            /* A single stale/corrupt map must not make every web session look
+             * disconnected. Skip it, keep the rest of the catalog usable. */
+            ESP_LOGW(TAG, "Skipping session mapping without chat_key: %s", entry->d_name);
+            cJSON_Delete(json);
+            continue;
+        }
+        err = claw_session_mgr_load_mapping_locked(key, map);
         cJSON_Delete(json);
+        if (err == ESP_ERR_INVALID_RESPONSE) {
+            ESP_LOGW(TAG, "Skipping invalid session mapping: %s", entry->d_name);
+            err = ESP_OK;
+            continue;
+        }
         if (err == ESP_OK) err = visit(map, ctx);
     }
     if (dir) closedir(dir);

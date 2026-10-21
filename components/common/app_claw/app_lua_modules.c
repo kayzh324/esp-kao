@@ -39,6 +39,9 @@
 #if CONFIG_APP_CLAW_LUA_DRIVER_UART
 #include "lua_driver_uart.h"
 #endif
+#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
+#include "lua_driver_usb_host_hid.h"
+#endif
 
 /* --- lua_module (higher-level modules) --- */
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
@@ -382,6 +385,14 @@ static esp_err_t app_lua_register_uart(const char *fatfs_base_path)
 }
 #endif
 
+#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
+static esp_err_t app_lua_register_usb_host_hid(const char *fatfs_base_path)
+{
+    (void)fatfs_base_path;
+    return lua_driver_usb_host_hid_register();
+}
+#endif
+
 /* --- lua_module register wrappers --- */
 
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
@@ -633,6 +644,9 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_DRIVER_UART
     { "uart", "UART", app_lua_register_uart },
 #endif
+#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
+    { "usb_host_hid", "USB HID", app_lua_register_usb_host_hid },
+#endif
     /* --- lua_module (higher-level modules) --- */
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)
     { "audio", "Audio", app_lua_register_audio },
@@ -745,6 +759,9 @@ static const app_lua_module_info_t s_lua_module_infos[] = {
 #endif
 #if CONFIG_APP_CLAW_LUA_DRIVER_UART
     { "uart", "UART" },
+#endif
+#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID
+    { "usb_host_hid", "USB HID" },
 #endif
     /* --- lua_module (higher-level modules) --- */
 #if CONFIG_APP_CLAW_LUA_MODULE_AUDIO && defined(CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT)

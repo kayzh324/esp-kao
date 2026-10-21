@@ -186,6 +186,12 @@ dependencies:
       - if: $CONFIG{APP_CLAW_LUA_DRIVER_TOUCH} == True
     path: ../../lua_modules/lua_driver_touch
 
+  lua_driver_usb_host_hid:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_DRIVER_USB_HOST_HID} == True
+    path: ../../lua_modules/lua_driver_usb_host_hid
+
   lua_driver_uart:
     rules:
       - if: $CONFIG{APP_CLAW_CAP_LUA} == True

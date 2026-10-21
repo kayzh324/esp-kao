@@ -13,6 +13,7 @@ local ui_input = require("ui_input")
 ui_input.mouse(dx, dy, buttons, wheel)  -- relative movement; buttons bit0 = left
 ui_input.key(usage, pressed)            -- HID usage id and press/release edge
 ui_input.set_hid(keyboard, mouse)       -- report which device classes exist
+ui_input.set_arrow_swap(swapped)        -- flag receivers with swapped arrow usages
 local status = ui_input.status()        -- { hid = bool, no_touch = bool }
 ```
 

@@ -42,6 +42,14 @@ static int lua_ui_input_set_hid(lua_State *L)
     return 0;
 }
 
+static int lua_ui_input_set_arrow_swap(lua_State *L)
+{
+    bool swapped = lua_toboolean(L, 1);
+
+    system_ui_input_set_arrow_swap(swapped);
+    return 0;
+}
+
 static int lua_ui_input_status(lua_State *L)
 {
     lua_newtable(L);
@@ -58,6 +66,7 @@ int luaopen_ui_input(lua_State *L)
         { "mouse", lua_ui_input_mouse },
         { "key", lua_ui_input_key },
         { "set_hid", lua_ui_input_set_hid },
+        { "set_arrow_swap", lua_ui_input_set_arrow_swap },
         { "status", lua_ui_input_status },
         { NULL, NULL },
     };

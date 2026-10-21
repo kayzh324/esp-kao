@@ -71,8 +71,8 @@ independent of launcher content.
   update state under a critical section; LVGL objects are only touched on the
   LVGL task or under `system_ui_lock()`.
 - The tested 2.4G receiver (`1915:1025`) reports the left/right arrow usages
-  swapped. The bridge maps the reported usages to the visual direction; A/D stay
-  standard. A future refinement can make this per-device.
+  swapped. `hid_input.lua` flags that VID/PID through
+  `ui_input.set_arrow_swap(true)`; standard keyboards keep the normal mapping.
 - Mouse wheel is accepted by the Lua API but currently reserved.
 - Multi-page launcher navigation is implemented in the grid math but only the
   single-page case has been exercised.

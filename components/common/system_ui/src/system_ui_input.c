@@ -32,6 +32,7 @@ static struct {
     bool pressed;
     bool hid_keyboard;
     bool hid_mouse;
+    bool arrow_swap;
     bool touch_available;
     system_ui_input_key_event_t keys[SYSTEM_UI_INPUT_KEY_QUEUE_LEN];
     size_t key_head;
@@ -366,6 +367,13 @@ void system_ui_input_mouse(int dx, int dy, uint32_t buttons, int wheel)
     portEXIT_CRITICAL(&s_input.lock);
 }
 
+void system_ui_input_set_arrow_swap(bool swapped)
+{
+    portENTER_CRITICAL(&s_input.lock);
+    s_input.arrow_swap = swapped;
+    portEXIT_CRITICAL(&s_input.lock);
+}
+
 void system_ui_input_key(uint32_t usage, bool pressed)
 {
     uint32_t key = system_ui_input_map_usage(usage);
@@ -380,14 +388,25 @@ void system_ui_input_key(uint32_t usage, bool pressed)
         return;
     }
     if (pressed) {
-        /* Some 2.4G receivers (seen with 1915:1025) report the arrow cluster
-         * with left/right usage ids swapped. Keep A/D standard and map the
-         * reported right/left usages to the visual direction. */
-        if (usage == 0x50 || usage == 0x04) {
+        bool swap;
+        portENTER_CRITICAL(&s_input.lock);
+        swap = s_input.arrow_swap;
+        portEXIT_CRITICAL(&s_input.lock);
+        /* HID 0x4F is the left arrow and 0x50 the right arrow. A few 2.4G
+         * receivers report them swapped; the Lua bridge flags those devices. */
+        if (usage == 0x4F) {
+            system_ui_input_move_focus(swap ? 1 : -1, 0);
+            return;
+        }
+        if (usage == 0x50) {
+            system_ui_input_move_focus(swap ? -1 : 1, 0);
+            return;
+        }
+        if (usage == 0x04) { /* a */
             system_ui_input_move_focus(-1, 0);
             return;
         }
-        if (usage == 0x4F || usage == 0x07) {
+        if (usage == 0x07) { /* d */
             system_ui_input_move_focus(1, 0);
             return;
         }

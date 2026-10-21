@@ -48,6 +48,7 @@ local function scan()
       if ok_open and dev then
         kb, kb_id = dev, d.id
         prev_keys = {}
+        ui.set_arrow_swap(d.vid == 0x1915 and d.pid == 0x1025)
         print("[hid_input] keyboard attached id=" .. tostring(d.id))
       end
     elseif d.type == "mouse" and not ms then

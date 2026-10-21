@@ -36,6 +36,9 @@ void system_ui_input_key(uint32_t usage, bool pressed);
 /** Report which HID device classes are currently connected. */
 void system_ui_input_set_hid(bool keyboard, bool mouse);
 
+/** Some receivers report the left/right arrow usages swapped. */
+void system_ui_input_set_arrow_swap(bool swapped);
+
 /** True when at least one HID device is connected. */
 bool system_ui_input_has_hid(void);
 

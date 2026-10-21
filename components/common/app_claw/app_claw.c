@@ -1125,6 +1125,18 @@ esp_err_t app_claw_start(const app_claw_config_t *config, claw_hw_registry_handl
     ESP_RETURN_ON_ERROR(app_claw_publish_startup_event(), TAG,
                         "Failed to publish startup event");
 #endif
+#if CONFIG_APP_CLAW_LUA_DRIVER_USB_HOST_HID && CONFIG_APP_CLAW_SYSTEM_UI_ENABLE
+    {
+        char input_out[128] = {0};
+        esp_err_t input_err = cap_lua_run_script_async("/system/scripts/hid_input.lua",
+                                                       NULL, 0, "hid_input", "input", true,
+                                                       input_out, sizeof(input_out));
+        if (input_err != ESP_OK) {
+            ESP_LOGW(TAG, "USB HID input bridge not started: %s (%s)",
+                     esp_err_to_name(input_err), input_out);
+        }
+    }
+#endif
     ESP_LOGI(TAG, "App Claw runtime started");
 
     return ESP_OK;

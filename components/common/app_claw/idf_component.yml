@@ -328,6 +328,12 @@ dependencies:
       - if: $CONFIG{APP_CLAW_LUA_DRIVER_LEDC} == True
     path: ../../lua_modules/lua_driver_ledc
 
+  lua_module_ui_input:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_UI_INPUT} == True
+    path: ../../lua_modules/lua_module_ui_input
+
   lua_module_scd41_sensor:
     rules:
       - if: $CONFIG{APP_CLAW_CAP_LUA} == True

@@ -204,6 +204,38 @@ esp_err_t system_ui_show_home(void)
     return ESP_OK;
 }
 
+esp_err_t system_ui_show_launcher(void)
+{
+    ESP_RETURN_ON_FALSE(s_ui.started && s_ui.home_screen, ESP_ERR_INVALID_STATE,
+                        SYSTEM_UI_TAG, "runtime not started");
+    ESP_RETURN_ON_FALSE(!display_service_has_exclusive_session(), ESP_ERR_INVALID_STATE,
+                        SYSTEM_UI_TAG, "exclusive display session active");
+    ESP_RETURN_ON_FALSE(s_ui.tileview && s_ui.launcher_first_tile, ESP_ERR_INVALID_STATE,
+                        SYSTEM_UI_TAG, "launcher page not ready");
+
+    ESP_RETURN_ON_ERROR(system_ui_lock(), SYSTEM_UI_TAG, "lock failed");
+    lv_tileview_set_tile(s_ui.tileview, s_ui.launcher_first_tile, LV_ANIM_ON);
+    if (s_ui.input_group && s_ui.launcher_first_focus) {
+        lv_group_focus_obj(s_ui.launcher_first_focus);
+    }
+    system_ui_load_screen_locked(s_ui.home_screen);
+    system_ui_unlock();
+    return ESP_OK;
+}
+
+esp_err_t system_ui_toggle_page(void)
+{
+    bool on_launcher;
+
+    ESP_RETURN_ON_FALSE(s_ui.started && s_ui.home_screen, ESP_ERR_INVALID_STATE,
+                        SYSTEM_UI_TAG, "runtime not started");
+    ESP_RETURN_ON_ERROR(system_ui_lock(), SYSTEM_UI_TAG, "lock failed");
+    on_launcher = s_ui.tileview && s_ui.launcher_first_tile &&
+                  lv_tileview_get_tile_active(s_ui.tileview) == s_ui.launcher_first_tile;
+    system_ui_unlock();
+    return on_launcher ? system_ui_show_home() : system_ui_show_launcher();
+}
+
 esp_err_t system_ui_reload_home(void)
 {
     ESP_RETURN_ON_FALSE(s_ui.started, ESP_ERR_INVALID_STATE,

@@ -89,6 +89,9 @@
 #if CONFIG_APP_CLAW_LUA_MODULE_THREAD
 #include "lua_module_thread.h"
 #endif
+#if CONFIG_APP_CLAW_LUA_MODULE_UI_INPUT
+#include "lua_module_ui_input.h"
+#endif
 #if CONFIG_APP_CLAW_LUA_MODULE_IMU
 #include "lua_module_imu.h"
 #endif
@@ -507,6 +510,14 @@ static esp_err_t app_lua_register_image(const char *fatfs_base_path)
 }
 #endif
 
+#if CONFIG_APP_CLAW_LUA_MODULE_UI_INPUT
+static esp_err_t app_lua_register_ui_input(const char *fatfs_base_path)
+{
+    (void)fatfs_base_path;
+    return lua_module_ui_input_register();
+}
+#endif
+
 #if CONFIG_APP_CLAW_LUA_MODULE_THREAD
 static esp_err_t app_lua_register_thread(const char *fatfs_base_path)
 {
@@ -693,6 +704,9 @@ static const app_lua_module_entry_t s_lua_module_entries[] = {
 #if CONFIG_APP_CLAW_LUA_MODULE_THREAD
     { "thread", "Thread", app_lua_register_thread },
 #endif
+#if CONFIG_APP_CLAW_LUA_MODULE_UI_INPUT
+    { "ui_input", "UI Input", app_lua_register_ui_input },
+#endif
 #if CONFIG_APP_CLAW_LUA_MODULE_IMU
     { "imu", "IMU", app_lua_register_imu },
 #endif
@@ -808,6 +822,9 @@ static const app_lua_module_info_t s_lua_module_infos[] = {
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_THREAD
     { "thread", "Thread" },
+#endif
+#if CONFIG_APP_CLAW_LUA_MODULE_UI_INPUT
+    { "ui_input", "UI Input" },
 #endif
 #if CONFIG_APP_CLAW_LUA_MODULE_IMU
     { "imu", "IMU" },

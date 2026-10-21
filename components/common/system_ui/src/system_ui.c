@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "system_ui_private.h"
+#include "system_ui_input.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -389,6 +390,15 @@ esp_err_t system_ui_start(const system_ui_config_t *config)
     ESP_GOTO_ON_ERROR(system_ui_vibration_init(), fail, SYSTEM_UI_TAG, "init vibration failed");
 
     ESP_GOTO_ON_ERROR(system_ui_lock(), fail, SYSTEM_UI_TAG, "lock failed");
+    if (!s_ui.input_group) {
+        s_ui.input_group = lv_group_create();
+        if (!s_ui.input_group) {
+            ret = ESP_ERR_NO_MEM;
+            system_ui_unlock();
+            goto fail;
+        }
+        lv_group_set_default(s_ui.input_group);
+    }
     system_ui_create_font_locked(config && config->font_path ? config->font_path : SYSTEM_UI_DEFAULT_FONT_PATH,
                                   config ? config->font_size : SYSTEM_UI_DEFAULT_FONT_SIZE);
     ret = system_ui_create_home_locked();
@@ -400,6 +410,16 @@ esp_err_t system_ui_start(const system_ui_config_t *config)
     }
     if (ret == ESP_OK) {
         ret = system_ui_create_jobs_locked();
+    }
+    if (ret == ESP_OK) {
+        display_service_info_t info = {0};
+        if (display_service_session_get_info(s_ui.display_session, &info) == ESP_OK) {
+            system_ui_input_note_touch(info.touch_available);
+        }
+        esp_err_t input_err = system_ui_input_start();
+        if (input_err != ESP_OK) {
+            ESP_LOGW(SYSTEM_UI_TAG, "HID input unavailable: %s", esp_err_to_name(input_err));
+        }
     }
     s_ui.started = ret == ESP_OK;
     system_ui_unlock();

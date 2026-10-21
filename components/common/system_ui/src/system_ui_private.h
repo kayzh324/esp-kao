@@ -182,6 +182,7 @@ typedef struct {
     lv_obj_t *home_tile;
     lv_obj_t *tileview;
     lv_obj_t *launcher_first_tile;
+    lv_obj_t *launcher_first_focus;
     lv_obj_t *status_label;
     lv_obj_t *time_label;
     lv_obj_t *date_label;
@@ -212,6 +213,7 @@ typedef struct {
     void *launcher_select_user_ctx;
     system_ui_launcher_layout_t launcher_layout;
     system_ui_launcher_app_t *launcher_apps;
+    lv_group_t *input_group;
     lv_image_dsc_t launcher_default_icon_dsc;
     uint8_t *launcher_default_icon_data;
     size_t launcher_default_icon_data_size;

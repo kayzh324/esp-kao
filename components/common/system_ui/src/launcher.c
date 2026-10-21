@@ -502,8 +502,18 @@ static esp_err_t system_ui_launcher_create_app_card(lv_obj_t *tile,
         }
         lv_obj_align(image, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_add_flag(image, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(image, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_set_style_outline_width(image, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_outline_color(image, system_ui_color(SYSTEM_UI_COLOR_TEXT), LV_STATE_FOCUSED);
         system_ui_add_click_feedback(image);
         lv_obj_add_event_cb(image, system_ui_launcher_app_event_cb, LV_EVENT_CLICKED, app);
+        if (s_ui.input_group) {
+            lv_group_add_obj(s_ui.input_group, image);
+            if (lv_group_get_obj_count(s_ui.input_group) == 1) {
+                s_ui.launcher_first_focus = image;
+                lv_group_focus_obj(image);
+            }
+        }
     } else {
         lv_obj_t *fallback = lv_obj_create(card);
         ESP_RETURN_ON_FALSE(fallback != NULL, ESP_ERR_NO_MEM, SYSTEM_UI_TAG, "create launcher fallback failed");
@@ -517,8 +527,18 @@ static esp_err_t system_ui_launcher_create_app_card(lv_obj_t *tile,
         lv_obj_set_style_pad_all(fallback, 0, 0);
         lv_obj_clear_flag(fallback, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(fallback, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(fallback, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_set_style_outline_width(fallback, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_outline_color(fallback, system_ui_color(SYSTEM_UI_COLOR_TEXT), LV_STATE_FOCUSED);
         system_ui_add_click_feedback(fallback);
         lv_obj_add_event_cb(fallback, system_ui_launcher_app_event_cb, LV_EVENT_CLICKED, app);
+        if (s_ui.input_group) {
+            lv_group_add_obj(s_ui.input_group, fallback);
+            if (lv_group_get_obj_count(s_ui.input_group) == 1) {
+                s_ui.launcher_first_focus = fallback;
+                lv_group_focus_obj(fallback);
+            }
+        }
 
         lv_obj_t *icon_label = lv_label_create(fallback);
         ESP_RETURN_ON_FALSE(icon_label != NULL, ESP_ERR_NO_MEM,
@@ -556,6 +576,7 @@ static esp_err_t system_ui_launcher_create_app_card(lv_obj_t *tile,
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     system_ui_apply_font(label);
     lv_obj_align(label, LV_ALIGN_TOP_MID, 0, grid->icon + grid->icon_title_gap);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     return ESP_OK;
 }
 
@@ -619,6 +640,10 @@ esp_err_t system_ui_launcher_create_pages_locked(void)
         ESP_RETURN_ON_ERROR(system_ui_launcher_create_page_locked(i),
                             SYSTEM_UI_TAG, "create launcher page failed");
     }
+    if (s_ui.input_group) {
+        ESP_LOGI(SYSTEM_UI_TAG, "launcher focus group objects=%u",
+                 (unsigned)lv_group_get_obj_count(s_ui.input_group));
+    }
     return ESP_OK;
 }
 
@@ -627,6 +652,7 @@ void system_ui_launcher_delete_locked(void)
     system_ui_launcher_unload_icons();
     s_ui.launcher_page_count = 0;
     s_ui.launcher_first_tile = NULL;
+    s_ui.launcher_first_focus = NULL;
 }
 
 esp_err_t system_ui_launcher_set_select_callback(system_ui_launcher_select_cb_t cb, void *user_ctx)

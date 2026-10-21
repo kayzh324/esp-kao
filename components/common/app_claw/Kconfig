@@ -365,6 +365,13 @@ menu "App Claw Config"
                 Enable the SCD41 CO2 sensor Lua module integration when Lua
                 capability is enabled.
 
+        config APP_CLAW_LUA_MODULE_UI_INPUT
+            bool "Enable ui_input Lua module"
+            default y if APP_CLAW_SYSTEM_UI_ENABLE
+            help
+                Inject USB HID keyboard/mouse reports into the system UI. Only
+                meaningful when the system UI runtime is enabled.
+
         config APP_CLAW_LUA_MODULE_EVENT_PUBLISHER
             bool "Enable event publisher Lua module"
             default y

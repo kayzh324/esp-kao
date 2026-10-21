@@ -1146,10 +1146,17 @@ static esp_err_t cap_files_delete_file_execute(const char *input_json,
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (stat(resolved_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (stat(resolved_path, &st) != 0) {
         cJSON_Delete(root);
         snprintf(output, output_size, "Error: file not found: %s", resolved_path);
         return ESP_ERR_NOT_FOUND;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        cJSON_Delete(root);
+        snprintf(output, output_size,
+                 "Error: not a regular file: %s (delete_file only removes files; use storage.remove for directories)",
+                 resolved_path);
+        return ESP_ERR_INVALID_ARG;
     }
 
     if (!cap_files_path_is_writable(resolved_path)) {

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "claw_memory_internal.h"
+#include "claw_utils_string.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -346,8 +347,10 @@ static void claw_memory_read_item_field_string(cJSON *json,
 {
     const char *value = cJSON_GetStringValue(cJSON_GetObjectItem(json, key));
 
-    if (value) {
-        safe_copy(dst, dst_size, value);
+    if (value && dst_size > 0) {
+        size_t keep = claw_utils_utf8_prefix_len(value, dst_size - 1);
+        memcpy(dst, value, keep);
+        dst[keep] = '\0';
     }
 }
 

@@ -1202,6 +1202,21 @@ static int cap_lua_format_runtime_seconds(time_t now, time_t since)
     return diff < 0 ? 0 : (int)diff;
 }
 
+static int cap_lua_job_runtime_seconds(const cap_lua_job_record_t *job, time_t now)
+{
+    time_t since;
+    time_t until;
+
+    if (!job) {
+        return 0;
+    }
+    since = job->started_at > 0 ? job->started_at : job->created_at;
+    /* A terminal job's runtime must not keep growing while it sits in the
+     * table; older builds reported months for jobs finished long ago. */
+    until = job->finished_at > 0 ? job->finished_at : now;
+    return cap_lua_format_runtime_seconds(until, since);
+}
+
 esp_err_t cap_lua_async_list_jobs(const char *status_filter,
                                   char *output,
                                   size_t output_size)
@@ -1223,9 +1238,7 @@ esp_err_t cap_lua_async_list_jobs(const char *status_filter,
         if (!s_jobs[i].used || !cap_lua_job_status_matches(s_jobs[i].status, status_filter)) {
             continue;
         }
-        int runtime_s = cap_lua_format_runtime_seconds(
-            now,
-            s_jobs[i].started_at ? s_jobs[i].started_at : s_jobs[i].created_at);
+        int runtime_s = cap_lua_job_runtime_seconds(&s_jobs[i], now);
         int written = snprintf(output + offset, output_size - offset,
                                "%s | %s | name=%s | exclusive=%s | runtime=%ds | path=%s\n",
                                s_jobs[i].job_id,
@@ -1345,9 +1358,7 @@ esp_err_t cap_lua_async_get_job(const char *id_or_name,
     }
 
     time_t now = time(NULL);
-    int runtime_s = cap_lua_format_runtime_seconds(
-        now,
-        s_jobs[slot].started_at ? s_jobs[slot].started_at : s_jobs[slot].created_at);
+    int runtime_s = cap_lua_job_runtime_seconds(&s_jobs[slot], now);
     uint64_t log_from = s_jobs[slot].log_seq > CAP_LUA_ASYNC_LOG_TAIL_DEFAULT_BYTES
                         ? s_jobs[slot].log_seq - CAP_LUA_ASYNC_LOG_TAIL_DEFAULT_BYTES
                         : 0;

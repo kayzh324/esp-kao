@@ -23,7 +23,11 @@ static void cap_memory_copy_string(cJSON *root, const char *key, char *dst, size
     const char *value = cJSON_GetStringValue(cJSON_GetObjectItem(root, key));
 
     if (value && dst && dst_size > 0) {
-        strlcpy(dst, value, dst_size);
+        /* Content can be CJK; cut on a UTF-8 boundary instead of splitting a
+         * multi-byte character (which used to produce invalid JSONL logs). */
+        size_t keep = claw_utils_utf8_prefix_len(value, dst_size - 1);
+        memcpy(dst, value, keep);
+        dst[keep] = '\0';
     }
 }
 
@@ -422,11 +426,11 @@ static esp_err_t cap_memory_recall_execute(const char *input_json,
                                                           (size_t)label_count,
                                                           catalog_json);
     if (invalid_label) {
-        cJSON_Delete(root);
         err = cap_memory_render_invalid_summary_labels(invalid_label,
                                                        catalog_json,
                                                        output,
                                                        output_size);
+        cJSON_Delete(root);
         free(catalog_json);
         return err;
     }

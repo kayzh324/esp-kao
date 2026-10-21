@@ -16,12 +16,12 @@
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
 
-#define SYSTEM_UI_LAUNCHER_DEFAULT_ROWS 3
-#define SYSTEM_UI_LAUNCHER_DEFAULT_COLS 3
+#define SYSTEM_UI_LAUNCHER_DEFAULT_ROWS 2
+#define SYSTEM_UI_LAUNCHER_DEFAULT_COLS 4
 #define SYSTEM_UI_LAUNCHER_MAX_ICON_FILE_SIZE (256 * 1024)
 #define SYSTEM_UI_LAUNCHER_TITLE_PAD_X 2
 
-static const int32_t s_launcher_min_icon_side = 48;
+static const int32_t s_launcher_min_icon_side = 40;
 static const int32_t s_launcher_max_icon_side = 96;
 
 typedef struct {

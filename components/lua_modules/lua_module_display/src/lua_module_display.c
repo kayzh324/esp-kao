@@ -252,9 +252,13 @@ static void lua_display_exit_cleanup(lua_State *L)
 static int lua_display_open(lua_State *L)
 {
     int count = 1;
+    bool exit_gesture = true;
     if (!lua_isnoneornil(L, 1)) {
         luaL_checktype(L, 1, LUA_TTABLE);
         count = lua_display_field_integer(L, 1, "framebuffer_count", 1);
+        lua_getfield(L, 1, "exit_gesture");
+        if (lua_isboolean(L, -1)) exit_gesture = lua_toboolean(L, -1);
+        lua_pop(L, 1);
     }
     if (count < 1 || count > 2) luaL_error(L, "display framebuffer_count must be 1 or 2");
     lua_display_screen_t *screen = lua_newuserdata(L, sizeof(*screen));
@@ -291,7 +295,7 @@ static int lua_display_open(lua_State *L)
     display_service_session_handle_t session = NULL;
     esp_err_t err = display_service_open(&(display_service_session_config_t) {
         .owner_name = DISPLAY_OWNER, .mode = DISPLAY_SERVICE_MODE_EXCLUSIVE_RAW,
-        .exit_request_cb = lua_display_exit_request,
+        .exit_request_cb = exit_gesture ? lua_display_exit_request : NULL,
     }, &session);
     display_service_info_t info = {0};
     display_handle_t handle = NULL;

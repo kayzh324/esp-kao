@@ -86,7 +86,7 @@ reading a log: it reads the row, not the raw output.
 ## 6. Environment
 
 Follow the environment conventions already in your instructions: the writable data root vs read-only
-`/system`, `apps/<name>/` with `app.json`, `tmp/` for throwaway scripts, internal files are not task
+`/system`, `apps/<id>/` with `launcher.json`, `tmp/` for throwaway scripts, internal files are not task
 input, and writes are versioned automatically. Do not re-derive them here.
 
 ## 7. Delegating to a subagent

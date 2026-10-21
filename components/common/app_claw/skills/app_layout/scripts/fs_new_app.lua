@@ -23,7 +23,7 @@ local RESERVED_NAMES = {
   system = true,
 }
 
-local FILE_ORDER = { "main.lua", "app.json", "config.json", "README.md" }
+local FILE_ORDER = { "main.lua", "launcher.json", "config.json", "README.md" }
 
 local MAIN_TEMPLATE = [[-- __APP_NAME__ entry point. This file is the only entry point of the app.
 local storage = require("storage")
@@ -64,7 +64,7 @@ __DESCRIPTION__
 | Path | Purpose |
 | --- | --- |
 | main.lua | The only entry point of this app. |
-| app.json | Manifest: name, description, entry, version, autostart, notes. This file is what marks the directory as an app. |
+| launcher.json | Launcher manifest: schema_version, id, display_name, entry, order, visible. Its presence is what makes the directory an app. |
 | config.json | User-editable settings. |
 | data/ | Runtime data once the app needs it: calibration values, recordings, logs, caches. |
 | assets/ | Static files once the app ships them: images, fonts. |
@@ -165,13 +165,13 @@ local function run()
 
   local files = {
     ["main.lua"] = render(MAIN_TEMPLATE, { ["__APP_NAME__"] = app_name }),
-    ["app.json"] = encode_object_pretty({
-      name = app_name,
-      description = description,
+    ["launcher.json"] = encode_object_pretty({
+      schema_version = 1,
+      id = app_name,
+      display_name = description ~= "" and description or app_name,
       entry = "main.lua",
-      version = version,
-      autostart = ctx.autostart,
-      notes = notes,
+      order = 0,
+      visible = true,
     }),
     ["config.json"] = encode_object_pretty({
       enabled = true,
@@ -202,6 +202,7 @@ local function run()
 
   print("[app_layout] fs_new_app root=" .. root)
   print("[app_layout] app_dir=" .. app_dir)
+  print("[app_layout] publish it after writing files: publish_app(app_id=" .. app_name .. ")")
 
   ensure_dir(apps_dir)
   ensure_dir(app_dir)

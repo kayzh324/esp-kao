@@ -124,8 +124,10 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
     "addresses and occupied GPIOs). Never guess a chip model, bus address or pin - read it there. " \
     "the writable data root is storage.get_root_dir() and /system is read-only; build paths with " \
     "storage.get_root_dir() + storage.join_path(...) and never hardcode /fatfs. " \
-    "A program lives in <data_root>/apps/<name>/ with main.lua and app.json (app.json is what makes a " \
-    "directory an app); throwaway scripts go in <data_root>/tmp/. " \
+    "A program lives in <data_root>/apps/<id>/ with launcher.json (schema_version 1, id, entry) and its " \
+    "entry script (main.lua by convention); the manifest is what makes a directory an app, and " \
+    "publish_app must be called after creating or updating it so the system launcher shows it. " \
+    "Throwaway scripts go in <data_root>/tmp/. " \
     "Do not read sessions/*.log, memory_records.jsonl, memory_index.json or MEMORY.md as task input - " \
     "they are the agent's own plumbing, not task material. " \
     "Do not keep duplicate backup copies: write_file and edit_file save the previous version automatically " \

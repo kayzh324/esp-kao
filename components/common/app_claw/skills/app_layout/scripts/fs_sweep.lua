@@ -26,7 +26,7 @@ local APP_OPTIONAL_DIRS = {
   { name = "data", note = "keeps no state" },
   { name = "assets", note = "ships no static files" },
 }
-local APP_KNOWN_FILES = { ["main.lua"] = true, ["app.json"] = true, ["config.json"] = true }
+local APP_KNOWN_FILES = { ["main.lua"] = true, ["launcher.json"] = true, ["config.json"] = true }
 local EXPECTED_ROOT_DIRS = {
   apps = true, tmp = true, skills = true, scripts = true, memory = true,
   sessions = true, scheduler = true, router_rules = true, static = true,
@@ -175,15 +175,15 @@ local function scan_apps()
       if name:sub(1, 1) == "_" then
         counts.skip = counts.skip + 1
         emit("skip", rel(path) .. " (underscore-prefixed lib, not an app)")
-      elseif storage.exists(storage.join_path(path, "app.json")) then
+      elseif storage.exists(storage.join_path(path, "launcher.json")) then
         scan_app(path)
       else
         counts.stray = counts.stray + 1
-        emit("STRAY", rel(path) .. " has no app.json so it is not an app; scaffold it with fs_new_app.lua or move it to tmp/")
+        emit("STRAY", rel(path) .. " has no launcher.json so it is not an app; scaffold it with fs_new_app.lua or move it to tmp/")
       end
     else
       counts.stray = counts.stray + 1
-      emit("STRAY", rel(path) .. " is a loose file directly in apps/; apps are directories with app.json")
+      emit("STRAY", rel(path) .. " is a loose file directly in apps/; apps are directories with launcher.json")
     end
   end
 end

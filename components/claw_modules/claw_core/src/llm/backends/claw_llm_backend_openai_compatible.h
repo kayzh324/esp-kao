@@ -24,6 +24,7 @@
 #define CLAW_LLM_BACKEND_OPENCODE_GO_AUTH_TYPE "bearer"
 #define CLAW_LLM_BACKEND_OPENCODE_GO_DEFAULT_MAX_TOKENS_FIELD "max_tokens"
 #define CLAW_LLM_BACKEND_OPENCODE_GO_SESSION_HEADER "x-opencode-session"
+#define CLAW_LLM_BACKEND_OPENCODE_GO_USER_AGENT "esp-claw/1.1.0"
 
 const claw_llm_backend_vtable_t *claw_llm_backend_openai_compatible_vtable(void);
 const claw_llm_backend_registration_t *claw_llm_backend_openai_compatible_registration(void);

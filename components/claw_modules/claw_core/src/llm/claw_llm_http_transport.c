@@ -410,6 +410,13 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
 
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    if (request->header_count > 0) {
+        ESP_LOGD(TAG, "POST %s extra_headers=%u", request->url ? request->url : "?",
+                 (unsigned)request->header_count);
+        for (size_t i = 0; i < request->header_count; i++) {
+            ESP_LOGD(TAG, "  %s: %s", request->headers[i].name, request->headers[i].value);
+        }
+    }
     auth_header_value = build_auth_header_value(request->auth_type,
                                                 resolved_token ? resolved_token : request->api_key);
     if (auth_header_value) {

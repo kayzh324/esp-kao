@@ -441,13 +441,18 @@ static esp_err_t openai_compatible_chat(void *backend_ctx,
      * openai_compatible keeps header_count 0 and sends no extra headers, so
      * its requests stay byte-identical.
      */
-    const claw_llm_http_header_t session_headers[1] = {
-        { .name = profile->session_header_name,
-          .value = request->session_id },
-    };
-    const size_t session_header_count =
-        (profile->session_header_name && request->session_id && request->session_id[0])
-        ? 1 : 0;
+    claw_llm_http_header_t session_headers[2];
+    size_t session_header_count = 0;
+    if (profile->session_header_name) {
+        session_headers[session_header_count].name = "User-Agent";
+        session_headers[session_header_count].value = CLAW_LLM_BACKEND_OPENCODE_GO_USER_AGENT;
+        session_header_count++;
+        if (request->session_id && request->session_id[0]) {
+            session_headers[session_header_count].name = profile->session_header_name;
+            session_headers[session_header_count].value = request->session_id;
+            session_header_count++;
+        }
+    }
 
     err = build_chat_body(ctx, profile, request, &post_data, out_error_message);
     if (err != ESP_OK) {
@@ -530,13 +535,18 @@ static esp_err_t openai_compatible_infer_media(void *backend_ctx,
      * opencode-go provider support (added): same opt-in session header rule
      * as openai_compatible_chat() above; plain openai_compatible sends none.
      */
-    const claw_llm_http_header_t session_headers[1] = {
-        { .name = profile->session_header_name,
-          .value = request->session_id },
-    };
-    const size_t session_header_count =
-        (profile->session_header_name && request->session_id && request->session_id[0])
-        ? 1 : 0;
+    claw_llm_http_header_t session_headers[2];
+    size_t session_header_count = 0;
+    if (profile->session_header_name) {
+        session_headers[session_header_count].name = "User-Agent";
+        session_headers[session_header_count].value = CLAW_LLM_BACKEND_OPENCODE_GO_USER_AGENT;
+        session_header_count++;
+        if (request->session_id && request->session_id[0]) {
+            session_headers[session_header_count].name = profile->session_header_name;
+            session_headers[session_header_count].value = request->session_id;
+            session_header_count++;
+        }
+    }
     if (!profile->supports_vision) {
         *out_error_message = dup_printf("Selected profile does not support media inference");
         return ESP_ERR_NOT_SUPPORTED;
@@ -724,9 +734,9 @@ const claw_llm_backend_registration_t *claw_llm_backend_openai_compatible_regist
  * endpoint that additionally asks coding-agent clients to send the current
  * conversation's session id in an "x-opencode-session" header on every LLM
  * request, so the provider can optimize routing and prompt-cache hits within
- * one conversation. The provider documentation also asks for a dedicated
- * client user agent, which is intentionally NOT set here (esp-claw is not a
- * mainstream coding client and gains nothing from it).
+ * one conversation. The provider documentation also asks clients to identify
+ * themselves with a real User-Agent instead of a generic HTTP-library name;
+ * we send "esp-claw/<version>" only for this backend.
  *
  * Implementation: this registration reuses every openai_compatible function
  * (same wire protocol); the only difference is defaults.session_header_name

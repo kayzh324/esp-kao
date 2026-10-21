@@ -57,6 +57,7 @@
 |---|---|---|---|---|
 | 1.0.0 | `kao-v1.0.0` | 2026-10-20 | `feat/agent-rework` | 首个版本。M1 + M2 agent harness 改造：工具层（`edit_file` / `grep_files` / 分页读取）、上下文投影与分级逐出、序列化降峰与诊断、委派准入与存活检测、等待语义、网关重试、性能档位、硬件事实生成 |
 | 1.1.0 | `kao-v1.1.0` | 2026-10-21 | `feat/agent-rework` | 合并上游 `345073de`（134 提交）。核心运行时对齐（`post_message` + receipt、`llm_authorizer`、历史读 API + `history_lock`、技能注册表、存储 space provider）；显示/启动器切到上游 display service + system_ui + app_registry；硬件层改用 `claw_hw_registry` 租约；保留 tier/窗口、投影、序列化闸门、工具层、子 agent 治理、`wait_ms`、传输重试、opencode-go。新增 USB HID 键鼠输入桥（触摸优先、自动识别、无输入提示）；恢复 Web 子 agent 工作灯、当前轮数 `R{n}` 与 Round brief；OpenCode Go 补真实 User-Agent 并确认 `x-opencode-session`；修复记忆 UTF-8 截断/`invalid_label`、`delete_file` 目录提示、异步 job `runtime_s`。S3 板触控回归通过；P4 板显示/SD/音频/WiFi/HID/自检工具链验收通过 |
+| 1.1.1 | `kao-v1.1.1` | 2026-10-21 | `feat/agent-rework` | 修复旧固件遗留的空/损坏 `sessions/chat_map/*.json` 导致 `/api/webim/sessions` 返回 500 `storage_error`、Web 前端显示“暂时无法连接设备”的问题。`claw_session_mgr_visit()` 现在跳过单个非法 map 并继续构建 catalog。S3 烧录验证通过；P4 未重烧（同一源码，后续接板即可） |
 
 ### 3.1 1.0.0 内容锚点
 

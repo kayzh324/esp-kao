@@ -16,12 +16,21 @@
 
 #define WEBIM_WS_CLIENTS 8
 #define WEBIM_WS_WORK_MAX 8
+#define WEBIM_STAGE_ID_PREFIX "agent-stage-"
+#define WEBIM_STAGE_TEXT_MAX 512
 
 typedef struct {
     httpd_handle_t server;
     int fd;
     uint32_t generation;
 } webim_notice_t;
+
+typedef struct {
+    httpd_handle_t server;
+    int fd;
+    uint32_t generation;
+    char *json;
+} webim_stage_notice_t;
 
 static void notify_client(void *arg)
 {
@@ -59,8 +68,64 @@ static void catalog_changed(void *arg)
     xSemaphoreGive(ctx->webim_lock);
 }
 
+static void notify_stage(void *arg)
+{
+    webim_stage_notice_t *job = arg;
+    http_server_ctx_t *ctx = http_server_ctx();
+    bool valid = false;
+    xSemaphoreTake(ctx->webim_lock, portMAX_DELAY);
+    for (size_t i = 0; i < WEBIM_WS_CLIENTS; i++) {
+        if (ctx->webim_clients[i].fd == job->fd && ctx->webim_clients[i].generation == job->generation && ctx->webim_server == job->server) valid = true;
+    }
+    if (ctx->webim_work_count) ctx->webim_work_count--;
+    xSemaphoreGive(ctx->webim_lock);
+    if (valid && httpd_ws_get_fd_info(job->server, job->fd) == HTTPD_WS_CLIENT_WEBSOCKET) {
+        httpd_ws_frame_t packet = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)job->json, .len = strlen(job->json)};
+        if (httpd_ws_send_frame_async(job->server, job->fd, &packet) != ESP_OK) http_server_webim_ws_fd_remove(job->fd);
+    }
+    free(job->json);
+    free(job);
+}
+
+static void broadcast_stage(const cap_im_local_message_t *message)
+{
+    http_server_ctx_t *ctx = http_server_ctx();
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+    cJSON_AddStringToObject(root, "type", "stage");
+    cJSON_AddStringToObject(root, "text", message->text ? message->text : "");
+    cJSON_AddStringToObject(root, "chat_id", message->chat_id ? message->chat_id : "");
+    cJSON_AddStringToObject(root, "message_id", message->message_id ? message->message_id : "");
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return;
+    if (strlen(json) > WEBIM_STAGE_TEXT_MAX * 2) {
+        free(json);
+        return;
+    }
+
+    if (!ctx->webim_lock) { free(json); return; }
+    xSemaphoreTake(ctx->webim_lock, portMAX_DELAY);
+    for (size_t i = 0; ctx->webim_server && i < WEBIM_WS_CLIENTS && ctx->webim_work_count < WEBIM_WS_WORK_MAX; i++) {
+        if (ctx->webim_clients[i].fd < 0) continue;
+        webim_stage_notice_t *job = malloc(sizeof(*job));
+        char *copy = job ? strdup(json) : NULL;
+        if (!job || !copy) { free(job); free(copy); break; }
+        *job = (webim_stage_notice_t){ctx->webim_server, ctx->webim_clients[i].fd, ctx->webim_clients[i].generation, copy};
+        if (httpd_queue_work(ctx->webim_server, notify_stage, job) != ESP_OK) { free(copy); free(job); break; }
+        ctx->webim_work_count++;
+    }
+    xSemaphoreGive(ctx->webim_lock);
+    free(json);
+}
+
 static esp_err_t outbound(const cap_im_local_message_t *message, void *arg)
 {
+    if (message && message->message_id &&
+            strncmp(message->message_id, WEBIM_STAGE_ID_PREFIX, strlen(WEBIM_STAGE_ID_PREFIX)) == 0) {
+        broadcast_stage(message);
+        return ESP_OK;
+    }
     if (message && message->channel && strcmp(message->channel, "web") == 0) catalog_changed(arg);
     return ESP_OK;
 }

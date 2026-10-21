@@ -1759,6 +1759,7 @@ static void claw_agent_mgr_fill_info_locked(const claw_agent_mgr_agent_t *agent,
     out_info->status = agent->status;
     out_info->phase = agent->core ? claw_core_get_agent_loop_phase(agent->core) :
                       CLAW_CORE_AGENT_LOOP_PHASE_IDLE;
+    out_info->round = agent->core ? claw_core_get_agent_loop_round(agent->core) : 0;
     out_info->last_request_id = agent->last_request_id;
     strlcpy(out_info->last_error, agent->last_error, sizeof(out_info->last_error));
     strlcpy(out_info->report_path, agent->last_report_path, sizeof(out_info->report_path));

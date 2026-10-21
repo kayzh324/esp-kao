@@ -221,6 +221,8 @@ export interface AgentState {
   type: string;
   status: string;
   busy: boolean;
+  /** 1-based in-flight LLM round, 0 when idle. */
+  round?: number;
 }
 
 export interface AgentStatesResponse {

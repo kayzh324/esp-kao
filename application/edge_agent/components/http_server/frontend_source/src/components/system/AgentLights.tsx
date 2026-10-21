@@ -1,4 +1,4 @@
-import { For, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { Component } from 'solid-js';
 import { fetchAgentStates, type AgentState } from '../../api/client';
 import { t } from '../../i18n';
@@ -9,9 +9,10 @@ const AGENT_TYPES = {
   recon: 'agentType_recon',
   build: 'agentType_build',
   verify: 'agentType_verify',
+  bench: 'agentType_bench',
 } as const;
 
-const AGENT_TYPE_KEYS = ['subagent', 'recon', 'build', 'verify'] as const;
+const AGENT_TYPE_KEYS = ['subagent', 'recon', 'build', 'verify', 'bench'] as const;
 
 const POLL_MS = 2000;
 
@@ -50,6 +51,12 @@ export const AgentLights: Component<{ chatId?: string }> = (props) => {
     return COLOR_IDLE;
   };
 
+  /* Highest in-flight round for this agent type; 0 when none is busy. */
+  const roundFor = (type: string): number => {
+    const busy = states().filter((a) => a.type === type && a.busy);
+    return busy.length ? Math.max(...busy.map((a) => a.round ?? 0)) : 0;
+  };
+
   return (
     <div class="flex items-center gap-2.5" title={t('agentLightsHint') as string}>
       <For each={AGENT_TYPE_KEYS}>
@@ -59,6 +66,11 @@ export const AgentLights: Component<{ chatId?: string }> = (props) => {
             <span class="text-[0.72rem] text-[var(--color-text-muted)]">
               {t(AGENT_TYPES[type]) as string}
             </span>
+            <Show when={roundFor(type) > 0}>
+              <span class="rounded bg-white/8 px-1 text-[0.62rem] text-[var(--color-text-secondary)]">
+                R{roundFor(type)}
+              </span>
+            </Show>
           </span>
         )}
       </For>

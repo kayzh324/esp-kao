@@ -719,7 +719,7 @@ esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, s
     }
     used = (size_t)written;
 
-    for (size_t i = 0; i < count && used + 96 < out_json_size; i++) {
+    for (size_t i = 0; i < count && used + 128 < out_json_size; i++) {
         const char *status;
         bool busy;
 
@@ -735,11 +735,12 @@ esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, s
                infos[i].phase != CLAW_CORE_AGENT_LOOP_PHASE_IDLE;
 
         written = snprintf(out_json + used, out_json_size - used,
-                           "%s{\"type\":\"%s\",\"status\":\"%s\",\"busy\":%s}",
+                           "%s{\"type\":\"%s\",\"status\":\"%s\",\"busy\":%s,\"round\":%u}",
                            i > 0 ? "," : "",
                            infos[i].agent_type,
                            status,
-                           busy ? "true" : "false");
+                           busy ? "true" : "false",
+                           (unsigned)infos[i].round);
         if (written < 0 || (size_t)written >= out_json_size - used) {
             out_json[used] = '\0';
             break;

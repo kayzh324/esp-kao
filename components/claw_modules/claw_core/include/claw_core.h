@@ -256,6 +256,8 @@ esp_err_t claw_core_post_message(claw_core_handle_t core,
 const char *claw_core_session_state(claw_core_handle_t core, const char *session_id);
 esp_err_t claw_core_cancel_request(claw_core_handle_t core, uint32_t request_id);
 claw_core_agent_loop_phase_t claw_core_get_agent_loop_phase(claw_core_handle_t core);
+/** Current 1-based LLM round of the in-flight run, 0 when idle. */
+uint32_t claw_core_get_agent_loop_round(claw_core_handle_t core);
 esp_err_t claw_core_receive(claw_core_handle_t core,
                             claw_core_response_t *response,
                             uint32_t timeout_ms);

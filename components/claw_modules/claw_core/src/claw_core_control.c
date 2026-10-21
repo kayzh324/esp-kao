@@ -19,6 +19,9 @@ void claw_core_control_set_phase(claw_core_state_t *core, claw_core_agent_loop_p
 
     if (xSemaphoreTake(core->inflight_lock, portMAX_DELAY) == pdTRUE) {
         core->agent_loop_phase = phase;
+        if (phase == CLAW_CORE_AGENT_LOOP_PHASE_IDLE) {
+            core->agent_loop_round = 0;
+        }
         xSemaphoreGive(core->inflight_lock);
     }
 }
@@ -82,6 +85,32 @@ esp_err_t claw_core_control_cancel_request(claw_core_state_t *core, uint32_t req
     }
     xSemaphoreGive(core->inflight_lock);
     return armed ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+void claw_core_control_set_round(claw_core_state_t *core, uint32_t round)
+{
+    if (!core || !core->inflight_lock) {
+        return;
+    }
+    if (xSemaphoreTake(core->inflight_lock, portMAX_DELAY) == pdTRUE) {
+        core->agent_loop_round = round;
+        xSemaphoreGive(core->inflight_lock);
+    }
+}
+
+uint32_t claw_core_control_get_round(claw_core_state_t *core)
+{
+    uint32_t round = 0;
+
+    if (!core || !core->initialized || !core->inflight_lock) {
+        return round;
+    }
+    if (xSemaphoreTake(core->inflight_lock, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return round;
+    }
+    round = core->agent_loop_round;
+    xSemaphoreGive(core->inflight_lock);
+    return round;
 }
 
 claw_core_agent_loop_phase_t claw_core_control_get_phase(claw_core_state_t *core)

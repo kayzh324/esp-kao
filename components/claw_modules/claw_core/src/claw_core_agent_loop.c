@@ -319,6 +319,7 @@ void claw_core_agent_loop_task(void *arg)
             messages = NULL;
 
             claw_core_control_set_phase(core, CLAW_CORE_AGENT_LOOP_PHASE_BEFORE_BUILD_ITERATION_CONTEXT);
+            claw_core_control_set_round(core, iteration + 1);
             {
                 bool drained = false;
 
@@ -630,6 +631,7 @@ finish_request:
             core->inflight_request_id = 0;
             core->inflight_session_id[0] = '\0';
             core->agent_loop_phase = CLAW_CORE_AGENT_LOOP_PHASE_IDLE;
+            core->agent_loop_round = 0;
             core->inflight_abort = false;
             core->inflight_abort_reason = CLAW_CORE_CONTROL_ABORT_REASON_NONE;
             claw_core_ingress_clear_run_inbox_locked(core);

@@ -7,6 +7,7 @@ import { t } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Modal } from '../components/ui/Modal';
 import { MarkdownMessage, loadMarkdownRuntime } from '../components/webim/MarkdownMessage';
+import { AgentLights } from '../components/system/AgentLights';
 
 export const WebImPage: Component = () => {
   const chat = createWebChat();
@@ -116,10 +117,21 @@ export const WebImPage: Component = () => {
         <header class="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--color-border-subtle)] px-4">
           <Show when={!sidebar()}><Button variant="ghost" size="xs" aria-label={t('chatSessions')} onClick={() => setSidebar(true)}><PanelLeft size={18} /></Button></Show>
           <h2 class="m-0 min-w-0 flex-1 truncate text-sm font-medium">{label(chat.session())}</h2>
+          <Show when={chat.session()?.alias}><AgentLights chatId={chat.session()!.alias} /></Show>
           <Show when={!chat.online()}><span class="text-xs text-amber-400">{t('chatDisconnected')}</span></Show>
         </header>
         <div ref={messagesEl} class="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8" onScroll={() => { if (messagesEl) chat.scroll(messagesEl.scrollTop); }}>
           <div class="mx-auto flex min-h-full max-w-[760px] flex-col gap-6">
+            <Show when={chat.stages().length}>
+              <details class="rounded-lg border border-[var(--color-border-subtle)] bg-white/[0.02]">
+                <summary class="cursor-pointer select-none px-3 py-2 text-xs text-[var(--color-text-muted)]">
+                  {t('chatRoundBrief')} ({chat.stages().length})
+                </summary>
+                <div class="max-h-44 overflow-y-auto px-3 pb-2 font-mono text-[0.7rem] leading-5 text-[var(--color-text-secondary)]">
+                  <For each={chat.stages()}>{stage => <div class="whitespace-pre-wrap">{stage.text}</div>}</For>
+                </div>
+              </details>
+            </Show>
             <Show when={chat.thread().more}><Button variant="ghost" size="sm" class="mx-auto" disabled={chat.thread().loading} onClick={() => void older()}>{t('chatEarlier')}</Button></Show>
             <Show when={chat.thread().loading && !chat.thread().loaded}><div class="flex items-center gap-2 text-sm text-[var(--color-text-muted)]"><LoaderCircle size={15} class="animate-spin" />{t('chatLoading')}</div></Show>
             <Show when={!chat.thread().loading && !chat.thread().messages.length && !pending()}><div class="my-auto flex flex-col items-center gap-3 py-16 text-center"><MessageSquare size={28} class="text-[var(--color-text-muted)]" /><h3 class="m-0 text-xl font-medium">{t('chatWelcome')}</h3><p class="m-0 text-sm text-[var(--color-text-muted)]">{t('chatWelcomeHint')}</p></div></Show>

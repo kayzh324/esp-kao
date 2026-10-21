@@ -354,6 +354,11 @@ claw_core_agent_loop_phase_t claw_core_get_agent_loop_phase(claw_core_handle_t c
     return claw_core_control_get_phase(core);
 }
 
+uint32_t claw_core_get_agent_loop_round(claw_core_handle_t core)
+{
+    return claw_core_control_get_round(core);
+}
+
 esp_err_t claw_core_start_run(claw_core_handle_t core,
                               const claw_core_request_t *request,
                               uint32_t timeout_ms)

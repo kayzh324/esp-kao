@@ -89,6 +89,7 @@ typedef struct {
     char agent_type[32];
     claw_agent_mgr_status_t status;
     claw_core_agent_loop_phase_t phase;
+    uint32_t round;
     uint32_t last_request_id;
     char last_error[CLAW_AGENT_MGR_LAST_ERROR_SIZE];
     /* Path of the full terminal report/error spilled by the notification path

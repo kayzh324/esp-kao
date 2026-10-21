@@ -128,6 +128,7 @@ struct claw_core_state {
     uint32_t inflight_request_id;
     char inflight_session_id[CLAW_CORE_INFLIGHT_SESSION_ID_SIZE];
     claw_core_agent_loop_phase_t agent_loop_phase;
+    uint32_t agent_loop_round;
     volatile bool inflight_abort;
     /* blocked outcome (added): set by a capability via claw_core_mark_blocked(),
      * consumed by the agent loop when the turn ends. */
@@ -250,6 +251,8 @@ void claw_core_control_clear_run_inbox_abort(claw_core_state_t *core,
                                              uint32_t request_id);
 esp_err_t claw_core_control_cancel_request(claw_core_state_t *core, uint32_t request_id);
 claw_core_agent_loop_phase_t claw_core_control_get_phase(claw_core_state_t *core);
+void claw_core_control_set_round(claw_core_state_t *core, uint32_t round);
+uint32_t claw_core_control_get_round(claw_core_state_t *core);
 
 void claw_core_publish_out_message_if_requested(const claw_core_request_item_t *request,
                                                 const claw_core_response_item_t *response);

@@ -3,6 +3,7 @@ import { createStore } from 'solid-js/store';
 import { createWebimSession, deleteWebimSession, fetchWebimHistory, fetchWebimSession, fetchWebimSessions, renameWebimSession, sendWebimMessage, webimWebSocketUrl, type WebImMessage, type WebImSession } from '../api/client';
 import { t } from '../i18n';
 
+export type StageNote = { id: string; text: string; chat_id: string };
 type Thread = { messages: WebImMessage[]; draft: string; files: string[]; before: number; more: boolean; loading: boolean; scroll: number; loaded: boolean; error: string; pending?: { id: string; text: string; files: string[]; state: 'sending' | 'accepted' | 'failed' }; run: WebImSession['run_state']; delivery: string };
 const emptyThread = (): Thread => ({ messages: [], draft: '', files: [], before: 0, more: false, loading: false, scroll: -1, loaded: false, error: '', run: 'idle', delivery: '' });
 const STORAGE_KEY = 'esp-claw-active-session';
@@ -15,6 +16,7 @@ export function createWebChat() {
   const [online, setOnline] = createSignal(true);
   const [error, setError] = createSignal('');
   const [threads, setThreads] = createStore<Record<string, Thread>>({ '': emptyThread() });
+  const [stages, setStages] = createSignal<StageNote[]>([]);
   let cursor = 0, boot = '', disposed = false, refreshing = false, creating = false;
   let listGeneration = 0;
   let socket: WebSocket | undefined;
@@ -83,10 +85,10 @@ export function createWebChat() {
     }
   };
   const select = async (id: string) => {
-    ensure(id); setActive(id); remember(id);
+    ensure(id); setActive(id); remember(id); setStages([]);
     await load(id);
   };
-  const fresh = () => { setActive(''); remember(''); };
+  const fresh = () => { setActive(''); remember(''); setStages([]); };
   const refresh = async () => {
     if (refreshing || disposed) return;
     refreshing = true;
@@ -141,7 +143,15 @@ export function createWebChat() {
     if (disposed || (socket && socket.readyState < WebSocket.CLOSING)) return;
     socket = new WebSocket(webimWebSocketUrl());
     socket.onopen = () => { socket?.send(JSON.stringify({ type: 'subscribe', scope: 'webim' })); void refresh(); };
-    socket.onmessage = () => void refresh();
+    socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(String(event.data)) as { type?: string; text?: string; chat_id?: string; message_id?: string };
+        if (payload.type === 'stage' && payload.text) {
+          setStages(prev => [...prev.slice(-49), { id: payload.message_id ?? `${Date.now()}`, text: payload.text!, chat_id: payload.chat_id ?? '' }]);
+        }
+      } catch { /* ignore malformed frames */ }
+      void refresh();
+    };
     socket.onerror = () => socket?.close();
   };
   const start = async () => {
@@ -161,7 +171,7 @@ export function createWebChat() {
   const focus = () => void refresh();
   window.addEventListener('focus', focus);
   onCleanup(() => { disposed = true; clearInterval(timer); window.removeEventListener('focus', focus); socket?.close(); });
-  return { sessions, active, source, more, online, error, thread, session, threads, start, select, fresh, send, rename, remove, load, refresh,
+  return { sessions, active, source, more, online, error, thread, session, threads, stages, start, select, fresh, send, rename, remove, load, refresh,
     loadMore: () => list(true),
     filter: async (value: string) => { setSource(value); await list(); },
     draft: (value: string) => setThreads(active(), 'draft', value),

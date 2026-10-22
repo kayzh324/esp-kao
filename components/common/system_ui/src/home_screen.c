@@ -6,6 +6,7 @@
 #include "system_ui_private.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "display_service.h"
@@ -76,10 +77,19 @@ static void system_ui_home_clock_timer_cb(lv_timer_t *timer)
     system_ui_home_update_clock_locked();
 }
 
+static bool system_ui_home_has_sta_ip(void)
+{
+    return s_ui.sta_connected && s_ui.sta_ip[0] && strcmp(s_ui.sta_ip, "0.0.0.0") != 0;
+}
+
 void system_ui_home_update_locked(void)
 {
     char status[96];
-    if (s_ui.sta_connected && s_ui.ap_ssid[0]) {
+    /* web-url-status (added): once DHCP is ready, show the address users can
+     * open the web UI at instead of an uninformative "WIFI ON". */
+    if (system_ui_home_has_sta_ip()) {
+        snprintf(status, sizeof(status), "http://%s", s_ui.sta_ip);
+    } else if (s_ui.sta_connected && s_ui.ap_ssid[0]) {
         snprintf(status, sizeof(status), "WIFI ON  |  AP %s", s_ui.ap_ssid);
     } else if (s_ui.sta_connected) {
         snprintf(status, sizeof(status), "WIFI ON");
@@ -89,6 +99,7 @@ void system_ui_home_update_locked(void)
         snprintf(status, sizeof(status), "WIFI OFF");
     }
 
+    ESP_LOGI(SYSTEM_UI_TAG, "home status: %s", status);
     if (s_ui.status_label) {
         lv_label_set_text(s_ui.status_label, status);
     }
@@ -274,7 +285,7 @@ void system_ui_delete_home_locked(void)
     s_ui.date_label = NULL;
 }
 
-esp_err_t system_ui_set_network_status(bool sta_connected, const char *ap_ssid)
+esp_err_t system_ui_set_network_status(bool sta_connected, const char *ap_ssid, const char *sta_ip)
 {
     system_ui_work_event_t event = {
         .type = SYSTEM_UI_WORK_EVENT_NETWORK_STATUS,
@@ -285,5 +296,6 @@ esp_err_t system_ui_set_network_status(bool sta_connected, const char *ap_ssid)
     event.generation = s_ui.generation;
     event.network_status.sta_connected = sta_connected;
     strlcpy(event.network_status.ap_ssid, ap_ssid ? ap_ssid : "", sizeof(event.network_status.ap_ssid));
+    strlcpy(event.network_status.sta_ip, sta_ip ? sta_ip : "", sizeof(event.network_status.sta_ip));
     return system_ui_post_work_event(&event, pdMS_TO_TICKS(100));
 }

@@ -5,8 +5,18 @@
  */
 #include "llm/claw_llm_runtime.h"
 
+#include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static const char *TAG = "claw_llm";
 
 #define CLAW_LLM_DEFAULT_TIMEOUT_MS (120 * 1000)
 #define CLAW_LLM_DEFAULT_MAX_TOKENS 8192
@@ -175,6 +185,104 @@ esp_err_t claw_llm_runtime_chat(claw_llm_runtime_t *runtime,
                                   request,
                                   out_response,
                                   out_error_message);
+}
+
+/* llm-retry (added): shared with the agent loop, which used to own the only
+ * copy of this policy. A transient failure produced no model output, so the
+ * identical request can be resent safely. */
+bool claw_llm_failure_is_transient(esp_err_t err, int http_status)
+{
+    switch (err) {
+    case ESP_ERR_HTTP_CONNECT:
+    case ESP_ERR_HTTP_FETCH_HEADER:
+    case ESP_ERR_HTTP_CONNECTION_CLOSED:
+    case ESP_ERR_HTTP_READ_TIMEOUT:
+    case ESP_ERR_HTTP_EAGAIN:
+    case ESP_ERR_HTTP_CONNECTING:
+    case ESP_ERR_HTTP_WRITE_DATA:
+    case ESP_ERR_TIMEOUT:
+        return true;
+    default:
+        break;
+    }
+    /* A gateway answered but could not serve the request. A 4xx is our request's
+     * fault and will fail the same way, so it is not retried. */
+    return http_status >= 500 || http_status == 429;
+}
+
+uint32_t claw_llm_retry_delay_ms(uint32_t attempt)
+{
+    uint32_t delay = CLAW_LLM_RETRY_BASE_MS;
+    uint32_t jitter;
+
+    for (uint32_t i = 0; i < attempt && delay < CLAW_LLM_RETRY_MAX_MS; i++) {
+        delay <<= 1;
+    }
+    if (delay > CLAW_LLM_RETRY_MAX_MS) {
+        delay = CLAW_LLM_RETRY_MAX_MS;
+    }
+    /* +/-25%: 0..half of the delay, minus a quarter. */
+    jitter = (delay * (esp_random() % 51)) / 100;
+    return delay - (delay / 4) + jitter;
+}
+
+esp_err_t claw_llm_runtime_chat_with_retry(claw_llm_runtime_t *runtime,
+                                           const claw_llm_chat_request_t *request,
+                                           claw_llm_response_t *out_response,
+                                           char **out_error_message)
+{
+    uint32_t retry_count = 0;
+
+    if (!runtime || !request || !out_response || !out_error_message) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (;;) {
+        esp_err_t err = claw_llm_runtime_chat(runtime, request, out_response, out_error_message);
+
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+
+        bool aborted = request->abort_flag && *request->abort_flag;
+
+        if (aborted ||
+                retry_count >= CLAW_LLM_RETRY_MAX_RETRIES ||
+                !claw_llm_failure_is_transient(err, out_response->http_status)) {
+            if (retry_count > 0 && *out_error_message) {
+                char *with_attempts = NULL;
+                int needed = snprintf(NULL, 0, "%s (gave up after %u attempts)",
+                                      *out_error_message, (unsigned)(retry_count + 1));
+
+                if (needed > 0) {
+                    with_attempts = malloc((size_t)needed + 1);
+                    if (with_attempts) {
+                        snprintf(with_attempts, (size_t)needed + 1,
+                                 "%s (gave up after %u attempts)",
+                                 *out_error_message, (unsigned)(retry_count + 1));
+                        free(*out_error_message);
+                        *out_error_message = with_attempts;
+                    }
+                }
+            }
+            return err;
+        }
+
+        uint32_t delay_ms = claw_llm_retry_delay_ms(retry_count);
+
+        retry_count++;
+        ESP_LOGW(TAG,
+                 "LLM call failed (%s, http=%d); retry %u/%u in %" PRIu32 " ms",
+                 *out_error_message ? *out_error_message : esp_err_to_name(err),
+                 out_response->http_status,
+                 (unsigned)retry_count,
+                 (unsigned)CLAW_LLM_RETRY_MAX_RETRIES,
+                 delay_ms);
+        free(*out_error_message);
+        *out_error_message = NULL;
+        out_response->http_status = 0;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
 }
 
 esp_err_t claw_llm_runtime_infer_media(claw_llm_runtime_t *runtime,

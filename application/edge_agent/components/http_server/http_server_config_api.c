@@ -56,6 +56,18 @@ static const config_field_def_t CONFIG_FIELDS[] = {
     CONFIG_FIELD("llm",          llm_supports_vision),
     CONFIG_FIELD("llm",          llm_image_remote_url_only),
 
+    /* compact-llm (added): optional dedicated LLM for session compaction. */
+    CONFIG_FIELD("llm",          compact_llm_enabled),
+    CONFIG_FIELD("llm",          compact_llm_api_key),
+    CONFIG_FIELD("llm",          compact_llm_backend_type),
+    CONFIG_FIELD("llm",          compact_llm_model),
+    CONFIG_FIELD("llm",          compact_llm_base_url),
+    CONFIG_FIELD("llm",          compact_llm_auth_type),
+    CONFIG_FIELD("llm",          compact_llm_timeout_ms),
+    CONFIG_FIELD("llm",          compact_llm_max_tokens),
+    CONFIG_FIELD("llm",          compact_llm_max_tokens_field),
+    CONFIG_FIELD("llm",          compact_llm_reasoning_effort),
+
     CONFIG_FIELD("im",           qq_app_id),
     CONFIG_FIELD("im",           qq_app_secret),
     CONFIG_FIELD("im",           qq_msg_type),
@@ -190,6 +202,8 @@ static bool is_sensitive_config_field(const char *name)
         "wifi_password",
         "ap_password",
         "llm_api_key",
+        /* compact-llm (added) */
+        "compact_llm_api_key",
         "qq_app_secret",
         "feishu_app_secret",
         "tg_bot_token",
@@ -437,7 +451,8 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Search setting is too long");
         }
         if (strcmp(field->name, "llm_max_tokens") == 0 ||
-                strcmp(field->name, "llm_default_image_max_bytes") == 0) {
+                strcmp(field->name, "llm_default_image_max_bytes") == 0 ||
+                strcmp(field->name, "compact_llm_max_tokens") == 0) {
             if (!is_positive_decimal_string(item->valuestring)) {
                 cJSON_Delete(root);
                 free(config);
@@ -445,12 +460,15 @@ static esp_err_t config_post_handler(httpd_req_t *req)
                                            HTTPD_400_BAD_REQUEST,
                                            strcmp(field->name, "llm_max_tokens") == 0 ?
                                                "llm_max_tokens must be a positive integer" :
-                                               "llm_default_image_max_bytes must be a positive integer");
+                                               (strcmp(field->name, "compact_llm_max_tokens") == 0 ?
+                                                    "compact_llm_max_tokens must be a positive integer" :
+                                                    "llm_default_image_max_bytes must be a positive integer"));
             }
         }
         if ((strcmp(field->name, "llm_supports_tools") == 0 ||
                 strcmp(field->name, "llm_supports_vision") == 0 ||
-                strcmp(field->name, "llm_image_remote_url_only") == 0) &&
+                strcmp(field->name, "llm_image_remote_url_only") == 0 ||
+                strcmp(field->name, "compact_llm_enabled") == 0) &&
                 !is_boolean_string(item->valuestring)) {
             cJSON_Delete(root);
             free(config);
@@ -458,7 +476,8 @@ static esp_err_t config_post_handler(httpd_req_t *req)
                                        HTTPD_400_BAD_REQUEST,
                                        "LLM boolean fields must be true/false");
         }
-        if (strcmp(field->name, "llm_reasoning_effort") == 0 &&
+        if ((strcmp(field->name, "llm_reasoning_effort") == 0 ||
+                strcmp(field->name, "compact_llm_reasoning_effort") == 0) &&
                 !is_reasoning_effort(item->valuestring)) {
             cJSON_Delete(root);
             free(config);

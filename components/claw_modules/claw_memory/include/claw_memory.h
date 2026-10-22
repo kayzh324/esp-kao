@@ -39,6 +39,9 @@ typedef struct {
     size_t max_message_chars;
     uint32_t max_tool_iterations;
     claw_memory_llm_config_t llm;
+    /* compact-llm (added): optional dedicated LLM for session compaction.
+     * Leave api_key/model/backend_type NULL to keep using `llm`. */
+    claw_memory_llm_config_t compact_llm;
     bool enable_async_extract_stage_note;
 } claw_memory_config_t;
 

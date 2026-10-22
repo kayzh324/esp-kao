@@ -34,6 +34,7 @@ extern "C" {
 #define SYSTEM_UI_DEFAULT_FONT_SIZE 24
 #define SYSTEM_UI_CLOCK_FONT_SIZE 72
 #define SYSTEM_UI_PATH_MAX 256
+#define SYSTEM_UI_IPV4_TEXT_LEN 16
 #define SYSTEM_UI_LAUNCHER_MAX_APPS 32
 #define SYSTEM_UI_LAUNCHER_ID_LEN 64
 #define SYSTEM_UI_LAUNCHER_TITLE_LEN 40
@@ -159,6 +160,8 @@ typedef struct {
         struct {
             bool sta_connected;
             char ap_ssid[64];
+            /* web-url-status (added): LAN address shown on the home screen. */
+            char sta_ip[SYSTEM_UI_IPV4_TEXT_LEN];
         } network_status;
     };
     char launcher_id[SYSTEM_UI_LAUNCHER_ID_LEN];
@@ -236,6 +239,8 @@ typedef struct {
     bool jobs_visible;
     bool sta_connected;
     char ap_ssid[64];
+    /* web-url-status (added): LAN address shown on the home screen. */
+    char sta_ip[SYSTEM_UI_IPV4_TEXT_LEN];
     char font_path[SYSTEM_UI_PATH_MAX];
 } system_ui_state_t;
 
@@ -292,7 +297,7 @@ void system_ui_unlock(void);
 esp_err_t system_ui_callback_lock(void);
 void system_ui_callback_unlock(void);
 
-esp_err_t system_ui_set_network_status(bool sta_connected, const char *ap_ssid);
+esp_err_t system_ui_set_network_status(bool sta_connected, const char *ap_ssid, const char *sta_ip);
 esp_err_t system_ui_overlay_set_visible(bool visible);
 esp_err_t system_ui_launcher_set_select_callback(system_ui_launcher_select_cb_t cb, void *user_ctx);
 esp_err_t system_ui_jobs_set_provider(system_ui_jobs_provider_cb_t cb, void *user_ctx);

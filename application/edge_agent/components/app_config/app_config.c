@@ -43,6 +43,17 @@ typedef struct {
 #define APP_DEFAULT_LLM_SUPPORTS_TOOLS       "false"
 #define APP_DEFAULT_LLM_SUPPORTS_VISION      "false"
 #define APP_DEFAULT_LLM_IMAGE_REMOTE_URL_ONLY "false"
+/* compact-llm (added): inherit the main LLM unless explicitly enabled. */
+#define APP_DEFAULT_COMPACT_LLM_ENABLED          "false"
+#define APP_DEFAULT_COMPACT_LLM_API_KEY          ""
+#define APP_DEFAULT_COMPACT_LLM_BACKEND_TYPE     ""
+#define APP_DEFAULT_COMPACT_LLM_MODEL            ""
+#define APP_DEFAULT_COMPACT_LLM_BASE_URL         ""
+#define APP_DEFAULT_COMPACT_LLM_AUTH_TYPE        ""
+#define APP_DEFAULT_COMPACT_LLM_TIMEOUT_MS       "120000"
+#define APP_DEFAULT_COMPACT_LLM_MAX_TOKENS       "8192"
+#define APP_DEFAULT_COMPACT_LLM_MAX_TOKENS_FIELD "max_tokens"
+#define APP_DEFAULT_COMPACT_LLM_REASONING_EFFORT "medium"
 #define APP_DEFAULT_QQ_APP_ID                ""
 #define APP_DEFAULT_QQ_APP_SECRET            ""
 #define APP_DEFAULT_QQ_MSG_TYPE              "0"
@@ -81,6 +92,17 @@ static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(llm_supports_tools, "llm_sup_tools", APP_DEFAULT_LLM_SUPPORTS_TOOLS),
     APP_CONFIG_FIELD(llm_supports_vision, "llm_sup_vis", APP_DEFAULT_LLM_SUPPORTS_VISION),
     APP_CONFIG_FIELD(llm_image_remote_url_only, "llm_img_url_o", APP_DEFAULT_LLM_IMAGE_REMOTE_URL_ONLY),
+    /* compact-llm (added): NVS keys stay <= 15 characters. */
+    APP_CONFIG_FIELD(compact_llm_enabled, "cmp_llm_en", APP_DEFAULT_COMPACT_LLM_ENABLED),
+    APP_CONFIG_FIELD(compact_llm_api_key, "cmp_llm_key", APP_DEFAULT_COMPACT_LLM_API_KEY),
+    APP_CONFIG_FIELD(compact_llm_backend_type, "cmp_llm_bkd", APP_DEFAULT_COMPACT_LLM_BACKEND_TYPE),
+    APP_CONFIG_FIELD(compact_llm_model, "cmp_llm_mdl", APP_DEFAULT_COMPACT_LLM_MODEL),
+    APP_CONFIG_FIELD(compact_llm_base_url, "cmp_llm_url", APP_DEFAULT_COMPACT_LLM_BASE_URL),
+    APP_CONFIG_FIELD(compact_llm_auth_type, "cmp_llm_auth", APP_DEFAULT_COMPACT_LLM_AUTH_TYPE),
+    APP_CONFIG_FIELD(compact_llm_timeout_ms, "cmp_llm_tmo", APP_DEFAULT_COMPACT_LLM_TIMEOUT_MS),
+    APP_CONFIG_FIELD(compact_llm_max_tokens, "cmp_llm_tok", APP_DEFAULT_COMPACT_LLM_MAX_TOKENS),
+    APP_CONFIG_FIELD(compact_llm_max_tokens_field, "cmp_llm_tkf", APP_DEFAULT_COMPACT_LLM_MAX_TOKENS_FIELD),
+    APP_CONFIG_FIELD(compact_llm_reasoning_effort, "cmp_llm_rsn", APP_DEFAULT_COMPACT_LLM_REASONING_EFFORT),
     APP_CONFIG_FIELD(qq_app_id, "qq_app_id", APP_DEFAULT_QQ_APP_ID),
     APP_CONFIG_FIELD(qq_app_secret, "qq_app_secret", APP_DEFAULT_QQ_APP_SECRET),
     APP_CONFIG_FIELD(qq_msg_type, "qq_msg_type", APP_DEFAULT_QQ_MSG_TYPE),
@@ -319,6 +341,37 @@ void app_config_to_claw(const app_config_t *config, app_claw_config_t *out)
     strlcpy(out->llm_image_remote_url_only,
             config->llm_image_remote_url_only,
             sizeof(out->llm_image_remote_url_only));
+    /* compact-llm (added) */
+    strlcpy(out->compact_llm_enabled,
+            config->compact_llm_enabled,
+            sizeof(out->compact_llm_enabled));
+    strlcpy(out->compact_llm_api_key,
+            config->compact_llm_api_key,
+            sizeof(out->compact_llm_api_key));
+    strlcpy(out->compact_llm_backend_type,
+            config->compact_llm_backend_type,
+            sizeof(out->compact_llm_backend_type));
+    strlcpy(out->compact_llm_model,
+            config->compact_llm_model,
+            sizeof(out->compact_llm_model));
+    strlcpy(out->compact_llm_base_url,
+            config->compact_llm_base_url,
+            sizeof(out->compact_llm_base_url));
+    strlcpy(out->compact_llm_auth_type,
+            config->compact_llm_auth_type,
+            sizeof(out->compact_llm_auth_type));
+    strlcpy(out->compact_llm_timeout_ms,
+            config->compact_llm_timeout_ms,
+            sizeof(out->compact_llm_timeout_ms));
+    strlcpy(out->compact_llm_max_tokens,
+            config->compact_llm_max_tokens,
+            sizeof(out->compact_llm_max_tokens));
+    strlcpy(out->compact_llm_max_tokens_field,
+            config->compact_llm_max_tokens_field,
+            sizeof(out->compact_llm_max_tokens_field));
+    strlcpy(out->compact_llm_reasoning_effort,
+            config->compact_llm_reasoning_effort,
+            sizeof(out->compact_llm_reasoning_effort));
     strlcpy(out->qq_app_id, config->qq_app_id, sizeof(out->qq_app_id));
     strlcpy(out->qq_app_secret, config->qq_app_secret, sizeof(out->qq_app_secret));
     strlcpy(out->qq_msg_type, config->qq_msg_type, sizeof(out->qq_msg_type));

@@ -124,6 +124,7 @@ static void system_ui_handle_network_status_event(const system_ui_work_event_t *
     if (s_ui.started && event->generation == s_ui.generation) {
         s_ui.sta_connected = event->network_status.sta_connected;
         strlcpy(s_ui.ap_ssid, event->network_status.ap_ssid, sizeof(s_ui.ap_ssid));
+        strlcpy(s_ui.sta_ip, event->network_status.sta_ip, sizeof(s_ui.sta_ip));
         system_ui_home_update_locked();
     }
     system_ui_unlock();
@@ -492,7 +493,7 @@ esp_err_t system_ui_set_callbacks(const system_ui_callbacks_t *callbacks, void *
 esp_err_t system_ui_update_network(const system_ui_network_state_t *state)
 {
     ESP_RETURN_ON_FALSE(state != NULL, ESP_ERR_INVALID_ARG, SYSTEM_UI_TAG, "network state missing");
-    return system_ui_set_network_status(state->sta_connected, state->ap_ssid);
+    return system_ui_set_network_status(state->sta_connected, state->ap_ssid, state->sta_ip);
 }
 
 esp_err_t system_ui_set_activity(bool active)

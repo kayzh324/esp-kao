@@ -90,6 +90,8 @@ ESP-Claw 同样支持自定义 LLM 供应商。目前，ESP-Claw 支持 OpenAI �
 ESP-Claw 推荐使用 `gpt-5.4`、`qwen3.6-plus`、`deepseek-v4-pro`、`claude-sonnet-4-6` 同等水平或更佳的模型，以充分发挥 ESP-Claw 的潜力。
 如需使用其他模型，请注意调整 LLM 高级选项中的「支持视觉输入」等配置，使之与模型支持的功能相匹配。
 
+默认情况下会话压缩使用主 LLM。打开 **记忆压缩模型** 开关后，可以为压缩单独配置供应商和模型；压缩只负责把较早的对话改写成摘要，通常使用更便宜的模型即可，不会影响任务 Agent 使用的模型。如果专用模型在重试后仍然失败，压缩会自动回落到主 LLM，避免这一轮压缩被直接丢弃。
+
 <Aside type="tip" title="留意 Base URL 的格式">
   自定义 LLM 供应商时，Base URL 的路径需要保留到版本号，即：
   - 保留 `/chat/completions` （OpenAI 格式）或 `/messages` （Anthropic 格式）<b><u>前</u></b>的部分；

@@ -31,6 +31,8 @@ typedef struct {
 typedef struct {
     bool sta_connected;
     const char *ap_ssid;
+    /* web-url-status (added): STA IPv4 address used as the web UI URL. */
+    const char *sta_ip;
 } system_ui_network_state_t;
 
 typedef struct {

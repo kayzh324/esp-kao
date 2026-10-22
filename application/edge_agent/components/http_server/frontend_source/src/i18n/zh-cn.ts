@@ -192,6 +192,16 @@ export const zhCn: Dict = {
   llmValidationRequiredFields: '保存前请补全 LLM 必填项：{fields}。',
   llmValidationMaxTokens: '最大 Token 数必须是正整数。',
   llmValidationImageMaxBytes: '默认图片大小上限必须是正整数。',
+  /* compact-llm (added) */
+  llmCompactTitle: '记忆压缩模型',
+  llmCompactEnable: '使用独立模型',
+  llmCompactHint:
+    '会话压缩会把较早的对话总结成摘要，通常不需要高性能模型；任务 Agent 仍然使用上方的 LLM 配置。',
+  llmCompactInherit: '未启用：压缩跟随主 LLM 配置。',
+  llmCompactApiKey: '压缩模型 API Key',
+  llmCompactModel: '压缩模型',
+  llmCompactMaxTokens: '压缩最大 Token 数',
+  llmValidationCompactMaxTokens: '压缩最大 Token 数必须是正整数。',
 
   sectionIm: '即时通讯 (IM)',
   imAdd: '添加',

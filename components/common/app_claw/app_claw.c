@@ -753,17 +753,20 @@ esp_err_t app_claw_get_agents_json(const char *chat_id_filter, char *out_json, s
     return ESP_OK;
 }
 
-esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid)
+esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid,
+                                      const char *sta_ip)
 {
 #if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE
     const system_ui_network_state_t state = {
         .sta_connected = sta_connected,
         .ap_ssid = ap_ssid,
+        .sta_ip = sta_ip,
     };
     return system_ui_update_network(&state);
 #else
     (void)sta_connected;
     (void)ap_ssid;
+    (void)sta_ip;
     return ESP_OK;
 #endif
 }
@@ -774,6 +777,39 @@ static bool app_claw_bool_is_true(const char *value)
 {
     return value &&
            (strcmp(value, "true") == 0 || strcmp(value, "1") == 0 || strcmp(value, "yes") == 0);
+}
+
+/* compact-llm (added): build the optional compaction-only LLM config.
+ * An all-zero struct tells claw_memory to keep using the main `llm` config. */
+static claw_memory_llm_config_t app_claw_compact_llm_config(const app_claw_config_t *config)
+{
+    claw_memory_llm_config_t llm = {0};
+
+    if (!app_claw_bool_is_true(config->compact_llm_enabled)) {
+        return llm;
+    }
+    if (!config->compact_llm_api_key[0] ||
+            !config->compact_llm_model[0] ||
+            !config->compact_llm_backend_type[0]) {
+        ESP_LOGW(TAG, "Compact LLM enabled but incomplete; falling back to the main LLM");
+        return llm;
+    }
+
+    llm.api_key = config->compact_llm_api_key;
+    llm.backend_type = config->compact_llm_backend_type;
+    llm.model = config->compact_llm_model;
+    llm.base_url = config->compact_llm_base_url;
+    llm.auth_type = config->compact_llm_auth_type;
+    llm.max_tokens_field = config->compact_llm_max_tokens_field;
+    llm.reasoning_effort = config->compact_llm_reasoning_effort;
+    llm.timeout_ms = (uint32_t)strtoul(config->compact_llm_timeout_ms, NULL, 10);
+    llm.max_tokens = (uint32_t)strtoul(config->compact_llm_max_tokens, NULL, 10);
+    /* Compaction never sends tools or images. */
+    llm.image_max_bytes = 0;
+    llm.supports_tools = false;
+    llm.supports_vision = false;
+    llm.image_remote_url_only = false;
+    return llm;
 }
 
 static esp_err_t init_memory(const app_claw_config_t *config, const app_claw_storage_paths_t *paths)
@@ -798,6 +834,8 @@ static esp_err_t init_memory(const app_claw_config_t *config, const app_claw_sto
             .supports_vision = app_claw_bool_is_true(config->llm_supports_vision),
             .image_remote_url_only = app_claw_bool_is_true(config->llm_image_remote_url_only),
         },
+        /* compact-llm (added): zero when disabled, so the memory module falls back. */
+        .compact_llm = app_claw_compact_llm_config(config),
 #if CONFIG_APP_CLAW_MEMORY_MODE_FULL
         .enable_async_extract_stage_note = true,
 #else

@@ -84,14 +84,16 @@ static void on_wifi_state_changed(bool connected, void *user_ctx)
     wifi_manager_status_t status = {0};
     wifi_manager_get_status(&status);
     const char *ap_ssid = status.ap_active ? status.ap_ssid : NULL;
+    const char *sta_ip = connected ? status.sta_ip : NULL;
 
-    ESP_LOGI(TAG, "Wi-Fi state: sta_connected=%d ap_active=%d mode=%s ap_ssid=%s",
+    ESP_LOGI(TAG, "Wi-Fi state: sta_connected=%d sta_ip=%s ap_active=%d mode=%s ap_ssid=%s",
              connected,
+             sta_ip ? sta_ip : "(none)",
              status.ap_active,
              status.mode ? status.mode : "off",
              ap_ssid ? ap_ssid : "(none)");
 
-    esp_err_t err = app_claw_set_network_status(connected, ap_ssid);
+    esp_err_t err = app_claw_set_network_status(connected, ap_ssid, sta_ip);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to update network UI: %s", esp_err_to_name(err));
     }
@@ -148,6 +150,37 @@ static void main_copy_claw_to_app_config(const app_claw_config_t *src, app_confi
     strlcpy(dst->llm_image_remote_url_only,
             src->llm_image_remote_url_only,
             sizeof(dst->llm_image_remote_url_only));
+    /* compact-llm (added) */
+    strlcpy(dst->compact_llm_enabled,
+            src->compact_llm_enabled,
+            sizeof(dst->compact_llm_enabled));
+    strlcpy(dst->compact_llm_api_key,
+            src->compact_llm_api_key,
+            sizeof(dst->compact_llm_api_key));
+    strlcpy(dst->compact_llm_backend_type,
+            src->compact_llm_backend_type,
+            sizeof(dst->compact_llm_backend_type));
+    strlcpy(dst->compact_llm_model,
+            src->compact_llm_model,
+            sizeof(dst->compact_llm_model));
+    strlcpy(dst->compact_llm_base_url,
+            src->compact_llm_base_url,
+            sizeof(dst->compact_llm_base_url));
+    strlcpy(dst->compact_llm_auth_type,
+            src->compact_llm_auth_type,
+            sizeof(dst->compact_llm_auth_type));
+    strlcpy(dst->compact_llm_timeout_ms,
+            src->compact_llm_timeout_ms,
+            sizeof(dst->compact_llm_timeout_ms));
+    strlcpy(dst->compact_llm_max_tokens,
+            src->compact_llm_max_tokens,
+            sizeof(dst->compact_llm_max_tokens));
+    strlcpy(dst->compact_llm_max_tokens_field,
+            src->compact_llm_max_tokens_field,
+            sizeof(dst->compact_llm_max_tokens_field));
+    strlcpy(dst->compact_llm_reasoning_effort,
+            src->compact_llm_reasoning_effort,
+            sizeof(dst->compact_llm_reasoning_effort));
 }
 
 static esp_err_t main_save_claw_config(const app_claw_config_t *config, void *user_ctx)

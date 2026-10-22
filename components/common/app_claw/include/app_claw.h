@@ -38,6 +38,17 @@ typedef struct {
     char llm_supports_tools[8];
     char llm_supports_vision[8];
     char llm_image_remote_url_only[8];
+    /* compact-llm (added): optional dedicated model for session compaction. */
+    char compact_llm_enabled[8];
+    char compact_llm_api_key[APP_CLAW_STR_LEN];
+    char compact_llm_backend_type[APP_CLAW_SHORT_STR_LEN];
+    char compact_llm_model[APP_CLAW_MODEL_LEN];
+    char compact_llm_base_url[APP_CLAW_STR_LEN];
+    char compact_llm_auth_type[APP_CLAW_SHORT_STR_LEN];
+    char compact_llm_timeout_ms[APP_CLAW_TIMEOUT_LEN];
+    char compact_llm_max_tokens[APP_CLAW_TIMEOUT_LEN];
+    char compact_llm_max_tokens_field[APP_CLAW_SHORT_STR_LEN];
+    char compact_llm_reasoning_effort[APP_CLAW_TIMEOUT_LEN];
     char qq_app_id[APP_CLAW_SHORT_STR_LEN];
     char qq_app_secret[APP_CLAW_STR_LEN];
     char qq_msg_type[8];
@@ -78,7 +89,8 @@ esp_err_t app_claw_get_config(app_claw_config_t *out_config);
 esp_err_t app_claw_apply_config(const app_claw_config_t *config);
 claw_core_handle_t app_claw_get_core(void);
 esp_err_t app_claw_ui_start(void);
-esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid);
+esp_err_t app_claw_set_network_status(bool sta_connected, const char *ap_ssid,
+                                      const char *sta_ip);
 /* agent-monitor (added): serialize subagent states as
  * {"ok":true,"agents":[{"type","status","busy"},...]} for the local web UI.
  * chat_id_filter may be NULL to list every agent. */

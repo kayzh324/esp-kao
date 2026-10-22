@@ -31,46 +31,10 @@ static const char *TAG = "claw_core";
  *
  * The interval grows each time (800 ms, 1.6 s, 3.2 s, capped) with jitter, because
  * a flapping gateway is usually busy and several agents on this device may be
- * retrying at once: hammering it at a fixed interval makes the flap longer. */
-#define CLAW_CORE_LLM_RETRY_MAX_RETRIES 4   /* the first try plus four retries */
-#define CLAW_CORE_LLM_RETRY_BASE_MS      800
-#define CLAW_CORE_LLM_RETRY_MAX_MS       8000
-
-static bool claw_core_llm_failure_is_transient(esp_err_t err, int http_status)
-{
-    switch (err) {
-    case ESP_ERR_HTTP_CONNECT:
-    case ESP_ERR_HTTP_FETCH_HEADER:
-    case ESP_ERR_HTTP_CONNECTION_CLOSED:
-    case ESP_ERR_HTTP_READ_TIMEOUT:
-    case ESP_ERR_HTTP_EAGAIN:
-    case ESP_ERR_HTTP_CONNECTING:
-    case ESP_ERR_HTTP_WRITE_DATA:
-    case ESP_ERR_TIMEOUT:
-        return true;
-    default:
-        break;
-    }
-    /* A gateway answered but could not serve the request. A 4xx is our request's
-     * fault and will fail the same way, so it is not retried. */
-    return http_status >= 500 || http_status == 429;
-}
-
-static uint32_t claw_core_llm_retry_delay_ms(uint32_t attempt)
-{
-    uint32_t delay = CLAW_CORE_LLM_RETRY_BASE_MS;
-    uint32_t jitter;
-
-    for (uint32_t i = 0; i < attempt && delay < CLAW_CORE_LLM_RETRY_MAX_MS; i++) {
-        delay <<= 1;
-    }
-    if (delay > CLAW_CORE_LLM_RETRY_MAX_MS) {
-        delay = CLAW_CORE_LLM_RETRY_MAX_MS;
-    }
-    /* +/-25%: 0..half of the delay, minus a quarter. */
-    jitter = (delay * (esp_random() % 51)) / 100;
-    return delay - (delay / 4) + jitter;
-}
+ * retrying at once: hammering it at a fixed interval makes the flap longer.
+ *
+ * The classification and backoff helpers are shared with every other LLM caller;
+ * see llm/claw_llm_runtime.h. */
 
 static esp_err_t drain_run_inbox(claw_core_state_t *core,
                                  const claw_core_request_item_t *request,
@@ -453,9 +417,9 @@ void claw_core_agent_loop_task(void *arg)
                  * request can be sent again - earlier rounds' tool results are
                  * replayed, not re-executed. See the policy comment at the top. */
                 if (!core->stop_requested &&
-                        llm_retry_count < CLAW_CORE_LLM_RETRY_MAX_RETRIES &&
-                        claw_core_llm_failure_is_transient(err, llm_response.http_status)) {
-                    uint32_t delay_ms = claw_core_llm_retry_delay_ms(llm_retry_count);
+                        llm_retry_count < CLAW_LLM_RETRY_MAX_RETRIES &&
+                        claw_llm_failure_is_transient(err, llm_response.http_status)) {
+                    uint32_t delay_ms = claw_llm_retry_delay_ms(llm_retry_count);
 
                     llm_retry_count++;
                     ESP_LOGW(TAG,
@@ -464,7 +428,7 @@ void claw_core_agent_loop_task(void *arg)
                              response.view.error_message ? response.view.error_message : esp_err_to_name(err),
                              llm_response.http_status,
                              (unsigned)llm_retry_count,
-                             (unsigned)CLAW_CORE_LLM_RETRY_MAX_RETRIES,
+                             (unsigned)CLAW_LLM_RETRY_MAX_RETRIES,
                              delay_ms);
                     free(response.view.error_message);
                     response.view.error_message = NULL;

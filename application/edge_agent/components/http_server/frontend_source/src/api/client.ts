@@ -23,6 +23,17 @@ export type AppConfig = {
   llm_supports_tools: string;
   llm_supports_vision: string;
   llm_image_remote_url_only: string;
+  /* compact-llm (added): optional dedicated model for session compaction. */
+  compact_llm_enabled: string;
+  compact_llm_api_key: string;
+  compact_llm_backend_type: string;
+  compact_llm_model: string;
+  compact_llm_base_url: string;
+  compact_llm_auth_type: string;
+  compact_llm_timeout_ms: string;
+  compact_llm_max_tokens: string;
+  compact_llm_max_tokens_field: string;
+  compact_llm_reasoning_effort: string;
   qq_app_id: string;
   qq_app_secret: string;
   qq_msg_type: string;
@@ -64,6 +75,17 @@ export const GROUP_FIELDS: Record<ConfigGroup, (keyof AppConfig)[]> = {
     'llm_supports_tools',
     'llm_supports_vision',
     'llm_image_remote_url_only',
+    /* compact-llm (added) */
+    'compact_llm_enabled',
+    'compact_llm_api_key',
+    'compact_llm_backend_type',
+    'compact_llm_model',
+    'compact_llm_base_url',
+    'compact_llm_auth_type',
+    'compact_llm_timeout_ms',
+    'compact_llm_max_tokens',
+    'compact_llm_max_tokens_field',
+    'compact_llm_reasoning_effort',
   ],
   im: [
     'qq_app_id',
@@ -95,6 +117,8 @@ export const SECRET_CONFIG_FIELDS: readonly (keyof AppConfig)[] = [
   'wifi_password',
   'ap_password',
   'llm_api_key',
+  /* compact-llm (added) */
+  'compact_llm_api_key',
   'qq_app_secret',
   'feishu_app_secret',
   'tg_bot_token',

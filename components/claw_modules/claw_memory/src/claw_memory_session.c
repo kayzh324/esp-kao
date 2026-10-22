@@ -65,6 +65,9 @@ typedef struct {
     SemaphoreHandle_t lock;
     TaskHandle_t task_handle;
     claw_llm_runtime_t *runtime;
+    /* compact-llm (added): optional dedicated runtime for session compaction.
+     * NULL means compaction uses `runtime` like before. */
+    claw_llm_runtime_t *compact_runtime;
     claw_memory_async_extract_job_t *jobs;
 } claw_memory_async_extract_state_t;
 
@@ -443,31 +446,23 @@ static void claw_memory_async_extract_deinit(void)
         claw_llm_runtime_deinit(s_async_extract.runtime);
         s_async_extract.runtime = NULL;
     }
+    /* compact-llm (added) */
+    if (s_async_extract.compact_runtime) {
+        claw_llm_runtime_deinit(s_async_extract.compact_runtime);
+        s_async_extract.compact_runtime = NULL;
+    }
     s_async_extract.enabled = false;
 }
 
-esp_err_t claw_memory_async_extract_init(const claw_memory_config_t *config)
+/* compact-llm (added): create a runtime from a memory LLM config, logging the
+ * backend error instead of leaking it to callers. */
+static esp_err_t claw_memory_llm_runtime_create(claw_llm_runtime_t **out_runtime,
+                                                const claw_memory_llm_config_t *llm)
 {
-    BaseType_t task_result;
-    const claw_memory_llm_config_t *llm = NULL;
     char *error_message = NULL;
     esp_err_t err;
 
-    claw_memory_async_extract_deinit();
-
-    if (!config || !config->enable_async_extract_stage_note) {
-        return ESP_OK;
-    }
-    llm = &config->llm;
-
-    if (!llm->api_key || !llm->api_key[0] ||
-        !llm->model || !llm->model[0] ||
-        !llm->backend_type || !llm->backend_type[0]) {
-        ESP_LOGI(TAG, "Async memory extract disabled: LLM config incomplete");
-        return ESP_OK;
-    }
-
-    err = claw_llm_runtime_init(&s_async_extract.runtime,
+    err = claw_llm_runtime_init(out_runtime,
                                 &(claw_llm_runtime_config_t) {
                                     .api_key = llm->api_key,
                                     .backend_type = llm->backend_type,
@@ -486,13 +481,58 @@ esp_err_t claw_memory_async_extract_init(const claw_memory_config_t *config)
                                 &error_message);
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
-                 "Failed to init async memory extract runtime: %s",
+                 "Failed to init memory LLM runtime: %s",
                  error_message ? error_message : esp_err_to_name(err));
-        free(error_message);
+    }
+    free(error_message);
+    return err;
+}
+
+static bool claw_memory_llm_config_is_complete(const claw_memory_llm_config_t *llm)
+{
+    return llm && llm->api_key && llm->api_key[0] &&
+           llm->model && llm->model[0] &&
+           llm->backend_type && llm->backend_type[0];
+}
+
+esp_err_t claw_memory_async_extract_init(const claw_memory_config_t *config)
+{
+    BaseType_t task_result;
+    const claw_memory_llm_config_t *llm = NULL;
+    esp_err_t err;
+
+    claw_memory_async_extract_deinit();
+
+    if (!config || !config->enable_async_extract_stage_note) {
+        return ESP_OK;
+    }
+    llm = &config->llm;
+
+    if (!claw_memory_llm_config_is_complete(llm)) {
+        ESP_LOGI(TAG, "Async memory extract disabled: LLM config incomplete");
+        return ESP_OK;
+    }
+
+    err = claw_memory_llm_runtime_create(&s_async_extract.runtime, llm);
+    if (err != ESP_OK) {
         claw_memory_async_extract_deinit();
         return err;
     }
-    free(error_message);
+
+    /* compact-llm (added): a dedicated compaction runtime is optional. If it
+     * cannot be created, keep the worker alive and fall back to the main one. */
+    if (claw_memory_llm_config_is_complete(&config->compact_llm)) {
+        err = claw_memory_llm_runtime_create(&s_async_extract.compact_runtime,
+                                             &config->compact_llm);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Compact LLM unavailable; compaction falls back to the main LLM");
+        } else {
+            ESP_LOGI(TAG,
+                     "Compact LLM ready backend=%s model=%s",
+                     config->compact_llm.backend_type,
+                     config->compact_llm.model);
+        }
+    }
 
     s_async_extract.lock = xSemaphoreCreateMutex();
     s_async_extract.queue = xQueueCreate(CLAW_MEMORY_ASYNC_EXTRACT_QUEUE_LEN,
@@ -2221,11 +2261,18 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
     char *system_prompt = NULL;
     char *summary_text = NULL;
     char *aux_session_id = NULL;
+    claw_llm_runtime_t *runtime = NULL;
+    claw_llm_chat_request_t chat_request = {0};
+    bool used_main_fallback = false;
     esp_err_t err;
 
     if (!session_id || !s_async_extract.runtime) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* compact-llm (added): prefer the dedicated compaction runtime. */
+    runtime = s_async_extract.compact_runtime ? s_async_extract.compact_runtime
+                                              : s_async_extract.runtime;
 
     data_path = claw_memory_session_path_dup(session_id);
     idx_path = data_path ? session_history_idx_path_dup(data_path) : NULL;
@@ -2315,19 +2362,44 @@ static esp_err_t claw_memory_session_compact_run(const char *session_id, uint32_
      * user's live session (see claw_memory_aux_session_id_dup). */
     aux_session_id = claw_memory_aux_session_id_dup(session_id, "compact");
 
-    err = claw_llm_runtime_chat(s_async_extract.runtime,
-                                &(claw_llm_chat_request_t) {
-                                    .system_prompt = system_prompt,
-                                    .messages = messages,
-                                    .tools_json = NULL,
-                                    .abort_flag = NULL,
-                                    .session_id = aux_session_id,
-                                },
-                                &response,
-                                &error_message);
+    chat_request = (claw_llm_chat_request_t) {
+        .system_prompt = system_prompt,
+        .messages = messages,
+        .tools_json = NULL,
+        .abort_flag = NULL,
+        .session_id = aux_session_id,
+    };
+
+    /* llm-retry (added): compaction runs off the request path, so a transient
+     * gateway failure should be retried with the shared exponential backoff
+     * instead of dropping this compaction round. */
+    err = claw_llm_runtime_chat_with_retry(runtime, &chat_request, &response, &error_message);
+    if (err != ESP_OK && runtime != s_async_extract.runtime) {
+        /* compact-llm-fallback (added): cheap/free compaction models are less
+         * reliable than the main model. Once their retries are exhausted, retry
+         * the same request on the main LLM so a compaction round is not dropped. */
+        ESP_LOGW(TAG,
+                 "compaction llm failed session=%s: %s; retrying with main LLM",
+                 session_id, error_message ? error_message : esp_err_to_name(err));
+        free(error_message);
+        error_message = NULL;
+        claw_llm_response_free(&response);
+        runtime = s_async_extract.runtime;
+        used_main_fallback = true;
+        err = claw_llm_runtime_chat_with_retry(runtime, &chat_request, &response, &error_message);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "compaction fell back to main LLM session=%s", session_id);
+        }
+    }
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "compaction llm failed session=%s: %s", session_id,
-                 error_message ? error_message : esp_err_to_name(err));
+        if (used_main_fallback) {
+            ESP_LOGW(TAG,
+                     "compaction llm failed on compact and main LLM fallback session=%s: %s",
+                     session_id, error_message ? error_message : esp_err_to_name(err));
+        } else {
+            ESP_LOGW(TAG, "compaction llm failed session=%s: %s", session_id,
+                     error_message ? error_message : esp_err_to_name(err));
+        }
         goto done;
     }
     if (!response.text || !response.text[0]) {

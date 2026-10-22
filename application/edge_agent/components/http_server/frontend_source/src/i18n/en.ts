@@ -194,6 +194,16 @@ export const en = {
   llmValidationRequiredFields: 'Complete required LLM fields before saving: {fields}.',
   llmValidationMaxTokens: 'Max Tokens must be a positive integer.',
   llmValidationImageMaxBytes: 'Default Image Max Bytes must be a positive integer.',
+  /* compact-llm (added) */
+  llmCompactTitle: 'Memory Compaction Model',
+  llmCompactEnable: 'Use a separate model',
+  llmCompactHint:
+    'Session compaction turns old turns into a summary. A cheaper model is usually enough; the task Agent keeps using the main LLM above.',
+  llmCompactInherit: 'Disabled: compaction follows the main LLM configuration.',
+  llmCompactApiKey: 'Compaction API Key',
+  llmCompactModel: 'Compaction Model',
+  llmCompactMaxTokens: 'Compaction Max Tokens',
+  llmValidationCompactMaxTokens: 'Compaction Max Tokens must be a positive integer.',
 
   sectionIm: 'Instant Messaging (IM)',
   imAdd: 'Add',

@@ -38,6 +38,18 @@ typedef struct {
     char llm_supports_tools[8];
     char llm_supports_vision[8];
     char llm_image_remote_url_only[8];
+    /* compact-llm (added): optional dedicated model for session compaction.
+     * When compact_llm_enabled is false the memory module keeps using llm_*. */
+    char compact_llm_enabled[8];
+    char compact_llm_api_key[APP_CONFIG_STR_LEN];
+    char compact_llm_backend_type[32];
+    char compact_llm_model[64];
+    char compact_llm_base_url[APP_CONFIG_STR_LEN];
+    char compact_llm_auth_type[32];
+    char compact_llm_timeout_ms[16];
+    char compact_llm_max_tokens[16];
+    char compact_llm_max_tokens_field[32];
+    char compact_llm_reasoning_effort[16];
     char qq_app_id[32];
     char qq_app_secret[APP_CONFIG_STR_LEN];
     char qq_msg_type[8];

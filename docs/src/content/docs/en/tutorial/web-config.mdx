@@ -90,6 +90,8 @@ You need to provide Base URL manually, and configure fields like Max Tokens fiel
 ESP-Claw recommends models at least comparable to `gpt-5.4`, `qwen3.6-plus`, `deepseek-v4-pro`, and `claude-sonnet-4-6` to unlock its full potential.
 If you use other models, tune LLM advanced options such as “supports vision input” to match the model capabilities.
 
+Session compaction uses the main LLM by default. Turn on **Memory Compaction Model** to give compaction its own provider and model; a cheaper model is usually sufficient because compaction only rewrites old turns into a summary. The task Agent is not affected. If the dedicated model still fails after transient retries, compaction falls back to the main LLM so the round is not dropped.
+
 <Aside type="tip" title="Pay attention to Base URL format">
   For custom LLM providers, the Base URL path must be kept up to the version segment:
   - Keep only the part <b><u>before</u></b> `/chat/completions` (OpenAI format) or `/messages` (Anthropic format);

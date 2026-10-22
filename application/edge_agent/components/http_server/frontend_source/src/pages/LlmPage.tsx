@@ -208,6 +208,17 @@ type LlmForm = {
   llm_supports_tools: boolean;
   llm_supports_vision: boolean;
   llm_image_remote_url_only: boolean;
+  /* compact-llm (added) */
+  compact_llm_enabled: boolean;
+  compact_llm_api_key: string;
+  compact_llm_backend_type: string;
+  compact_llm_model: string;
+  compact_llm_base_url: string;
+  compact_llm_auth_type: string;
+  compact_llm_timeout_ms: string;
+  compact_llm_max_tokens: string;
+  compact_llm_max_tokens_field: string;
+  compact_llm_reasoning_effort: string;
 };
 
 function isPositiveInteger(value: string): boolean {
@@ -264,6 +275,17 @@ export const LlmPage: Component = () => {
       llm_supports_tools: parseBool(config.llm_supports_tools),
       llm_supports_vision: parseBool(config.llm_supports_vision),
       llm_image_remote_url_only: parseBool(config.llm_image_remote_url_only),
+      /* compact-llm (added) */
+      compact_llm_enabled: parseBool(config.compact_llm_enabled),
+      compact_llm_api_key: config.compact_llm_api_key ?? '',
+      compact_llm_backend_type: config.compact_llm_backend_type ?? '',
+      compact_llm_model: config.compact_llm_model ?? '',
+      compact_llm_base_url: config.compact_llm_base_url ?? '',
+      compact_llm_auth_type: config.compact_llm_auth_type ?? '',
+      compact_llm_timeout_ms: config.compact_llm_timeout_ms ?? '',
+      compact_llm_max_tokens: config.compact_llm_max_tokens ?? '',
+      compact_llm_max_tokens_field: config.compact_llm_max_tokens_field ?? '',
+      compact_llm_reasoning_effort: config.compact_llm_reasoning_effort ?? 'medium',
     }),
     fromForm: (form) => ({
       llm_api_key: form.llm_api_key.trim(),
@@ -279,13 +301,31 @@ export const LlmPage: Component = () => {
       llm_supports_tools: String(form.llm_supports_tools),
       llm_supports_vision: String(form.llm_supports_vision),
       llm_image_remote_url_only: String(form.llm_image_remote_url_only),
+      /* compact-llm (added) */
+      compact_llm_enabled: String(form.compact_llm_enabled),
+      compact_llm_api_key: form.compact_llm_api_key.trim(),
+      compact_llm_backend_type: form.compact_llm_backend_type.trim(),
+      compact_llm_model: form.compact_llm_model.trim(),
+      compact_llm_base_url: form.compact_llm_base_url.trim(),
+      compact_llm_auth_type: form.compact_llm_auth_type.trim(),
+      compact_llm_timeout_ms: form.compact_llm_timeout_ms.trim(),
+      compact_llm_max_tokens: form.compact_llm_max_tokens.trim(),
+      compact_llm_max_tokens_field: form.compact_llm_max_tokens_field.trim(),
+      compact_llm_reasoning_effort: form.compact_llm_reasoning_effort.trim(),
     }),
   });
   const [validationError, setValidationError] = createSignal<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
   const [selectedPreset, setSelectedPreset] = createSignal<PresetKey | null>(null);
+  /* compact-llm (added) */
+  const [compactOpen, setCompactOpen] = createSignal(false);
+  const [compactPreset, setCompactPreset] = createSignal<PresetKey | null>(null);
   const providerLinks = createMemo(() => {
     const key = selectedPreset();
+    return key ? getProviderLinks(key) : undefined;
+  });
+  const compactProviderLinks = createMemo(() => {
+    const key = compactPreset();
     return key ? getProviderLinks(key) : undefined;
   });
 
@@ -302,6 +342,16 @@ export const LlmPage: Component = () => {
     void tab.form.llm_supports_tools;
     void tab.form.llm_supports_vision;
     void tab.form.llm_image_remote_url_only;
+    /* compact-llm (added) */
+    void tab.form.compact_llm_enabled;
+    void tab.form.compact_llm_api_key;
+    void tab.form.compact_llm_model;
+    void tab.form.compact_llm_max_tokens;
+    void tab.form.compact_llm_backend_type;
+    void tab.form.compact_llm_base_url;
+    void tab.form.compact_llm_auth_type;
+    void tab.form.compact_llm_max_tokens_field;
+    void tab.form.compact_llm_reasoning_effort;
     setValidationError(null);
   });
 
@@ -319,6 +369,20 @@ export const LlmPage: Component = () => {
     tab.setForm('llm_model', preset.llm_model);
     setSelectedPreset(key);
     setAdvancedOpen(preset.advanced);
+  };
+
+  /* compact-llm (added): fill provider fields but keep the API key empty so a
+   * separate provider does not silently inherit the task model's key. */
+  const applyCompactPreset = (key: PresetKey) => {
+    const preset = PROVIDER_PRESETS[key];
+    tab.setForm('compact_llm_backend_type', preset.llm_backend_type);
+    tab.setForm('compact_llm_base_url', preset.llm_base_url);
+    tab.setForm('compact_llm_auth_type', preset.llm_auth_type);
+    tab.setForm('compact_llm_max_tokens_field', preset.llm_max_tokens_field);
+    tab.setForm('compact_llm_reasoning_effort', preset.llm_reasoning_effort ?? 'medium');
+    tab.setForm('compact_llm_model', preset.llm_model);
+    setCompactPreset(key);
+    setCompactOpen(true);
   };
 
   const handleSave = async () => {
@@ -359,6 +423,40 @@ export const LlmPage: Component = () => {
       setValidationError(message);
       pushToast(message, 'error', 5000);
       return;
+    }
+
+    /* compact-llm (added): only validate the optional profile when enabled. */
+    if (tab.form.compact_llm_enabled) {
+      const compactRequired: Array<[keyof LlmForm, string]> = [
+        ['compact_llm_api_key', t('llmCompactApiKey') as string],
+        ['compact_llm_model', t('llmCompactModel') as string],
+        ['compact_llm_backend_type', t('llmBackend') as string],
+        ['compact_llm_base_url', t('llmBaseUrl') as string],
+        ['compact_llm_auth_type', t('llmAuthType') as string],
+        ['compact_llm_max_tokens', t('llmCompactMaxTokens') as string],
+        ['compact_llm_max_tokens_field', t('llmMaxTokensField') as string],
+        ['compact_llm_reasoning_effort', t('llmReasoningEffort') as string],
+      ];
+      const compactMissing = compactRequired
+        .filter(([key]) => typeof tab.form[key] === 'string' && !(tab.form[key] as string).trim())
+        .map(([, label]) => label);
+
+      if (compactMissing.length > 0) {
+        const message = (t('llmValidationRequiredFields') as string).replace(
+          '{fields}',
+          compactMissing.join(' / '),
+        );
+        setValidationError(message);
+        pushToast(message, 'error', 5000);
+        return;
+      }
+
+      if (!isPositiveInteger(tab.form.compact_llm_max_tokens.trim())) {
+        const message = t('llmValidationCompactMaxTokens') as string;
+        setValidationError(message);
+        pushToast(message, 'error', 5000);
+        return;
+      }
     }
 
     await tab.save();
@@ -514,6 +612,144 @@ export const LlmPage: Component = () => {
                 label={t('llmImageRemoteUrlOnly') as string}
               />
             </div>
+          </div>
+        </CollapsibleConfigBlock>
+        {/* compact-llm (added): optional dedicated model for session compaction. */}
+        <CollapsibleConfigBlock
+          title={t('llmCompactTitle') as string}
+          defaultOpen={false}
+          open={compactOpen()}
+          onOpenChange={setCompactOpen}
+          headerEnd={
+            <Switch
+              checked={tab.form.compact_llm_enabled}
+              onChange={(checked) => tab.setForm('compact_llm_enabled', checked)}
+              label={t('llmCompactEnable') as string}
+            />
+          }
+        >
+          <div class="flex flex-col gap-3 pt-2">
+            <p class="text-[0.8rem] leading-5 text-[var(--color-text-muted)]">
+              {t('llmCompactHint') as string}
+            </p>
+            <Show
+              when={tab.form.compact_llm_enabled}
+              fallback={
+                <p class="text-[0.8rem] text-[var(--color-text-secondary)]">
+                  {t('llmCompactInherit') as string}
+                </p>
+              }
+            >
+              <div class="flex flex-col gap-2">
+                <div class="text-[0.8rem] text-[var(--color-text-secondary)] font-medium">
+                  {t('llmFillDefaults') as string}
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  {PRESET_BUTTONS.map((key) => (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      active={compactPreset() === key}
+                      onClick={() => applyCompactPreset(key)}
+                    >
+                      {presetLabel(key)}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <TextInput
+                  type="password"
+                  label={
+                    <>
+                      {t('llmCompactApiKey')}
+                      <Show when={compactProviderLinks()}>
+                        {(links) => (
+                          <LabelLink href={links().consoleUrl}>
+                            {t('llmProviderConsole') as string} ↗
+                          </LabelLink>
+                        )}
+                      </Show>
+                    </>
+                  }
+                  value={tab.form.compact_llm_api_key}
+                  onInput={(event) => tab.setForm('compact_llm_api_key', event.currentTarget.value)}
+                />
+                <TextInput
+                  label={
+                    <>
+                      {t('llmCompactModel')}
+                      <Show when={compactProviderLinks()}>
+                        {(links) => (
+                          <LabelLink href={links().docsUrl}>
+                            {t('llmProviderDocs') as string} ↗
+                          </LabelLink>
+                        )}
+                      </Show>
+                    </>
+                  }
+                  value={tab.form.compact_llm_model}
+                  onInput={(event) => tab.setForm('compact_llm_model', event.currentTarget.value)}
+                />
+                <TextInput
+                  label={t('llmCompactMaxTokens')}
+                  placeholder={t('llmMaxTokensPlaceholder') as string}
+                  value={tab.form.compact_llm_max_tokens}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_max_tokens', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label={t('llmBackend')}
+                  placeholder={t('llmBackendPlaceholder') as string}
+                  value={tab.form.compact_llm_backend_type}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_backend_type', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  type="url"
+                  label={t('llmBaseUrl')}
+                  placeholder={t('llmBaseUrlPlaceholder') as string}
+                  value={tab.form.compact_llm_base_url}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_base_url', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label={t('llmAuthType')}
+                  placeholder={t('llmAuthTypePlaceholder') as string}
+                  value={tab.form.compact_llm_auth_type}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_auth_type', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label={t('llmMaxTokensField')}
+                  placeholder={t('llmMaxTokensFieldPlaceholder') as string}
+                  value={tab.form.compact_llm_max_tokens_field}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_max_tokens_field', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label={t('llmReasoningEffort')}
+                  placeholder={t('llmReasoningEffortPlaceholder') as string}
+                  value={tab.form.compact_llm_reasoning_effort}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_reasoning_effort', event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label={t('llmTimeout')}
+                  placeholder={t('llmTimeoutPlaceholder') as string}
+                  value={tab.form.compact_llm_timeout_ms}
+                  onInput={(event) =>
+                    tab.setForm('compact_llm_timeout_ms', event.currentTarget.value)
+                  }
+                />
+              </div>
+            </Show>
           </div>
         </CollapsibleConfigBlock>
       </fieldset>

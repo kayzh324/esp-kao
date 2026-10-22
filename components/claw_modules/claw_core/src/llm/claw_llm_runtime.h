@@ -58,6 +58,32 @@ esp_err_t claw_llm_runtime_chat(claw_llm_runtime_t *runtime,
                                 const claw_llm_chat_request_t *request,
                                 claw_llm_response_t *out_response,
                                 char **out_error_message);
+
+/*
+ * llm-retry (added): shared retry policy for transient transport failures.
+ *
+ * This used to live only inside the agent loop, so auxiliary callers such as
+ * memory compaction and memory extraction had no retry at all. Keep the policy
+ * here so every runtime user can share exactly the same classification and
+ * backoff without duplicating constants.
+ */
+#define CLAW_LLM_RETRY_MAX_RETRIES 4 /* the first try plus four retries */
+#define CLAW_LLM_RETRY_BASE_MS      800
+#define CLAW_LLM_RETRY_MAX_MS       8000
+
+bool claw_llm_failure_is_transient(esp_err_t err, int http_status);
+uint32_t claw_llm_retry_delay_ms(uint32_t attempt);
+
+/*
+ * Same as claw_llm_runtime_chat(), but retries transient transport failures
+ * with jittered exponential backoff. Requests with request->abort_flag set are
+ * not retried. On final failure out_error_message describes the last attempt.
+ */
+esp_err_t claw_llm_runtime_chat_with_retry(claw_llm_runtime_t *runtime,
+                                           const claw_llm_chat_request_t *request,
+                                           claw_llm_response_t *out_response,
+                                           char **out_error_message);
+
 esp_err_t claw_llm_runtime_infer_media(claw_llm_runtime_t *runtime,
                                        const claw_llm_media_request_t *request,
                                        char **out_text,
